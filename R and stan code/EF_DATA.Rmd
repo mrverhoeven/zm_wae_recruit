@@ -1,0 +1,1098 @@
+---
+title: "EF_DATA"
+author: "Holly Kundel"
+date: "5/3/2021"
+output: html_document
+---
+load in required packages
+```{r, warning = FALSE, message = FALSE}
+library(readr) # for read_csv
+library(dplyr) # for data manipulation (filter, mutate, summarise, etc.)
+library(lubridate) # for parsing out dates
+library(stringr) #for the string_pad function
+library(ggplot2) # for plotting
+library(gridExtra) #for grid.arrange
+library(reactable) # for reactable
+library(readxl) # to read in infested waters data
+library(tidyr) #for replace_na and drop_na and pivot_wider
+library(viridis) # for viridis color palette for plotting
+
+options(scipen=999) #ensures all digits of survey ids are printed
+```
+
+# Work with the Effort Data
+## Incoporate the Effort
+Make sure there are zeros included
+```{r, message= FALSE}
+Effort <- read_csv('EFFORT_DETAILS_LAKES_20200416.csv')
+options(scipen = 100) #ensures that survey IDs aren't written in scientific notation
+```
+
+Filter for appropriate date, sampling technique and species
+- for now keep target species as NA - will check with DNR area managers later on
+```{r, message=FALSE}
+Effort_Filtered <- Effort %>%
+  mutate(DATE = mdy(SAMPLING_START_DATE)) %>% # use lubridate to parse mdy
+  mutate(YEAR = year(DATE))%>% # create a column with the year the survey was done
+  mutate(MONTH = month(DATE)) %>% 
+  filter(MONTH >= 08)%>%
+  filter(SAMP_STA_TYPE_ABBREV== "EW"|SAMP_STA_TYPE_ABBREV == "EF"|SAMP_STA_TYPE_ABBREV == "SEF")%>%
+  filter(str_detect(SPECIES_TARGETED, "WAE") | is.na(SPECIES_TARGETED) )%>% #use str_detect because some surveys target walleye AND other species
+  filter(DAYLIGHT_SAMPLING == "N") #added 7/30/20, 3217 surveys
+
+# 2749 with EW and EF then up to 3444 down to 3217 when removed day time surveys
+  
+# Filter for surveys that are at least 30 minutes long. Handbook suggests 2 hours of sampling, but several surveys are short.   
+Effort_Filtered_30min <- Effort_Filtered %>%
+  filter(EF_SECONDS >= 1800) #2634
+LAT_LON <- read_csv('DOW_latlongs_NEW.csv')
+```
+_______________________________________________
+## Effort Check for Heidi
+```{r}
+Effort_Filtered_Heidi <- Effort %>%
+  filter(SAMP_STA_TYPE_ABBREV== "EW"|SAMP_STA_TYPE_ABBREV == "EF"|SAMP_STA_TYPE_ABBREV == "SEF")%>% #keep survey types of interest
+  filter(str_detect(SPECIES_TARGETED, "WAE") | is.na(SPECIES_TARGETED) )%>% #filter for walleye target (keep NAs as precaution)
+  mutate(DATE = mdy(SAMPLING_START_DATE)) %>% # use lubridate to parse mdy
+  mutate(YEAR = year(DATE))%>% # create a column with the year the survey was done
+  mutate(MONTH = month(DATE))%>%
+  filter(MONTH>=08)%>%
+  filter(DAYLIGHT_SAMPLING == "N")%>%
+  filter(WATER_TEMP_F > 50)%>%
+  filter(WATER_TEMP_F < 68)%>%
+  filter(EF_SECONDS >= 7200)
+```
+_________________________________________________
+
+
+# Stocking Data
+### Stocking Data from Steve
+
+```{r, message = FALSE}
+#Read in Steve's Data
+
+EF_Steve <- read_csv('EW+GN_CSV.csv') #modify information to match where the csv is saved on your computer
+
+EF_Data <- EF_Steve %>% #2975
+  mutate(DOW = gsub("-","",EF_Steve$DOW)) %>% #removes all dashes from DOW numbers (DOW is 8 digit chr)
+  rename(Year_Class=7) %>%
+  select(-ID)%>%
+  rename(FIRST_SAMPLING_DATE=10)
+
+Steve_Ef_Year <- EF_Data %>% #2975
+  mutate(Date = mdy(`FIRST_SAMPLING_DATE`)) %>% # use lubridate to parse mdy
+  mutate(Year = year(Date))%>%
+  select(DOW, Year, FRY, FRL, FGL, YRL)
+
+# Effort data with Steve's stocking data. 
+EF_Steve_Stock <- Effort_Filtered_30min %>%
+  left_join(Steve_Ef_Year, by = c("DOW_KITTLE" =
+                                    "DOW", "SURVEY_YEAR"="Year"))%>%
+  mutate(STOCKING_DAT_SOURCE = ifelse(is.na(FRY), paste("need"), paste("Steve"))) #column to tell us source of stocking data
+#741 surveys still need stocking data
+```
+
+```{r}
+# DF of surveys that still need stocking data after checking Steve's DB
+Need_Stocking_Data <- EF_Steve_Stock %>%
+  filter(STOCKING_DAT_SOURCE == "need")%>%
+  select(1,2,3, SAMPLING_START_DATE) #741
+```
+
+## Data from Paula
+```{r, warning = FALSE, message=FALSE}
+Paula_Stocking <- read_excel("WAE stocking data for Holly.xls", sheet = 2)
+
+Paula_Stocking_Working <- Paula_Stocking %>%
+  select(1,2,6,9,11)%>%
+  rename(MANAGING_AREA = 1, WATER_BODY_NAME = 2, DOW_KITTLE = 3, LIFE_STAGE = 4, STOCKING_DATE = 5)%>% #match naming conventions
+  mutate(STOCKING_DATE = ymd(STOCKING_DATE))%>%
+  mutate(YEAR = year(STOCKING_DATE))%>%
+  mutate(DOW_KITTLE = str_replace_all(DOW_KITTLE, "-", "")) #fix DOW format to match previous
+
+## Pull stocking data from Paula's list for surveys Steve didn't have
+#### Note, in Paula's data base, some lake years are listed multiple times due to multiple stocking events
+EF_Data_frm_Paula <- Need_Stocking_Data %>%
+  left_join(Paula_Stocking_Working, by = c("DOW_KITTLE" = "DOW_KITTLE", "SURVEY_YEAR"="YEAR"))%>%
+  mutate(SAMPLING_START_DATE = mdy(SAMPLING_START_DATE))%>% #tell R this is a date as month day year
+  mutate(SAMPLING_START_DATE = as_date(SAMPLING_START_DATE))%>% # format as a date for comparison
+  mutate(STOCKING_DATE = as_date(STOCKING_DATE))%>% # format as a date for comparison
+  mutate(before_survey = ifelse(SAMPLING_START_DATE > STOCKING_DATE, 1, 0))%>%
+  drop_na(STOCKING_DATE) %>% # remove rows that don't match Paula's data
+  pivot_wider(names_from = LIFE_STAGE, values_from = before_survey, values_fn = list(before_survey = sum), values_fill = 0)%>%
+  group_by(SURVEY_ID)%>%
+  summarize(FRY2 = sum(FRY),
+            FRL2 = sum(FRL),
+            FGL2 = sum(FGL),
+            YRL2 = sum(YRL))
+```
+
+## Merge Paula's Data with Previous (Steve's Data)
+```{r}
+EF_Stock_Steve_Paula <- EF_Steve_Stock %>%
+  left_join(EF_Data_frm_Paula, by = "SURVEY_ID") %>% #start process of populating original df
+  mutate(FRY3 = case_when(FRY2 == 0 ~ "N",
+                         FRY2 >= 1 ~ "Y",
+                         FRY == "N" ~ "N",
+                         FRY == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>% #populate if FRY stocking occurred
+  mutate(FRL3 = case_when(FRL2 == 0 ~ "N",
+                         FRL2 >= 1 ~ "Y",
+                         FRL == "N" ~ "N",
+                         FRL == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>%
+  mutate(FGL3 = case_when(FGL2 == 0 ~ "N",
+                         FGL2 >= 1 ~ "Y",
+                         FGL == "N" ~ "N",
+                         FGL == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>%
+  mutate(YRL3 = case_when(YRL2 == 0 ~ "N",
+                         YRL2 >= 1 ~ "Y",
+                         YRL == "N" ~ "N",
+                         YRL == "Y" ~ "Y",
+                         TRUE ~ "NA"))%>%
+  mutate(STOCKING_DAT_SOURCE = case_when(FRY2 >= 0 ~ "Paula",
+                                         STOCKING_DAT_SOURCE == "Steve" ~ "Steve",
+                                         TRUE ~ "need")) # reminder to delete extra columns.,
+
+
+Need_AM_help <- EF_Stock_Steve_Paula %>%
+  filter(STOCKING_DAT_SOURCE == "need")%>% #408
+  left_join(Paula_Stocking_3, by = c("DOW_KITTLE"="DOW"))%>%
+  mutate(Status = case_when(SURVEY_YEAR < 2010 ~ "pre-FishPad",
+                            is.na(No_Stocking_post_2010)~"need",
+                            ))
+  filter(SURVEY_YEAR < 2010)%>%
+  filter(is.na(No_Stocking_post_2010)) #315
+  
+```
+
+## Stocking Data from Area Managers
+```{r}
+AM_Stocking_Data <- read_excel("Updated_Stocking_frm_AM/ALL_updated_stocking.xlsx")
+
+AM_Stocking_Data_work <- AM_Stocking_Data %>%
+  mutate(DOW_KITTLE = str_pad(DOW_KITTLE, 8, side = "right", pad = "0"))%>%
+  select(2,3, 7:11)%>% #remove duplicate columns not needed for the join
+  rename(FRY_AM = FRY, FRL_AM = FRL, FGL_AM = FGL, YRL_AM = YRL, SOURCE = STOCKING_DAT_SOURCE) #to avoid duplicate column names with join
+
+
+# Add stocking data from AM to other list
+EF_Stock_Steve_Paula_AM_Edit <- EF_Stock_Steve_Paula %>%
+  left_join(AM_Stocking_Data_work, by = c("DOW_KITTLE" = "DOW_KITTLE", "SURVEY_YEAR"="SURVEY_YEAR"))%>%
+   mutate(FRY4 = case_when(FRY3 == "N" ~ "N",
+                         FRY3 == "Y" ~ "Y",
+                         FRY_AM == "N" ~ "N",
+                         FRY_AM == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>% #populate if FRY stocking occurred
+  mutate(FRL4 = case_when(FRL3 == "N" ~ "N",
+                         FRL3 == "Y" ~ "Y",
+                         FRL_AM == "N" ~ "N",
+                         FRL_AM == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>%
+  mutate(FGL4 = case_when(FGL3 == "N" ~ "N",
+                         FGL3 == "Y" ~ "Y",
+                         FGL_AM == "N" ~ "N",
+                         FGL_AM == "Y" ~ "Y",
+                         TRUE ~ "NA")) %>%
+  mutate(YRL4 = case_when(YRL3 == "N" ~ "N",
+                         YRL3 == "Y" ~ "Y",
+                         YRL_AM == "N" ~ "N",
+                         YRL_AM == "Y" ~ "Y",
+                         TRUE ~ "NA"))%>%
+  mutate(STOCKING_DAT_SOURCE = case_when(STOCKING_DAT_SOURCE == "Steve"~"Steve", #datasource column so we know where data are from
+                                         STOCKING_DAT_SOURCE == "Paula"~"Paula",
+                                         SOURCE == "AM"~"AM"))%>%
+  select(1:28, 33, 47:50) #removes incomplete FRY, FRL, FGL, and YRL columns and only keeps most complete (i.e. FRY4)
+
+#More Data from Paula, these lakes have no stocking data in FishPad and hence were not stocked
+Paula_NO_Stocking <- read_excel("WAE stocking data for Holly.xls", sheet = 1)
+
+No_Stocking_Dat_Paula <- Paula_NO_Stocking %>% #Paula indicated if lakes had no data in fish pad (and hence have not been stocked)
+  select(1:3)%>% #only keep columns with info
+  rename(NO_STOCK = 3)%>% # give this column a name
+  mutate(DOW = str_pad(DOW, 8, side = "left", pad = "0"))%>% #correct DOWs to have 8 digits
+  mutate(DOW = str_replace_all(DOW, "-", ""))%>% #remove dashes from DOWs
+  drop_na(NO_STOCK)%>% #only keep rows that Paula indicated had no stocking data
+  mutate(FISHPAD = "N")
+
+EF_Stock_Steve_Paula_AM_Edit_2 <- EF_Stock_Steve_Paula_AM_Edit %>%
+  left_join(No_Stocking_Dat_Paula, by = c("DOW_KITTLE" ="DOW"))%>%
+  mutate(NO_STOCK_2 = ifelse(FISHPAD == "N" & is.na(STOCKING_DAT_SOURCE), "N", NA))%>% 
+  mutate(FRY5 = case_when(FRY4 == "N" ~ "N",
+                          FRY4 == "Y" ~ "Y",
+                          NO_STOCK_2 =="N" ~"N", #adds in "N" from Paula's look at FishPad
+                          TRUE ~ "NA"))%>%
+  mutate(FRL5 = case_when(FRL4 == "N" ~ "N",
+                          FRL4 == "Y" ~ "Y",
+                          NO_STOCK_2 =="N" ~"N",
+                          TRUE ~ "NA"))%>%
+  mutate(FGL5 = case_when(FGL4 == "N" ~ "N",
+                          FGL4 == "Y" ~ "Y",
+                          NO_STOCK_2 =="N" ~"N",
+                          TRUE ~ "NA"))%>%
+  mutate(YRL5 = case_when(YRL4 == "N" ~ "N",
+                          YRL4 == "Y" ~ "Y",
+                          NO_STOCK_2 =="N" ~"N",
+                          TRUE ~ "NA"))%>%
+  mutate(STOCKING_DAT_SOURCE = case_when(STOCKING_DAT_SOURCE == "Steve"~"Steve", #datasource column so we know where data are from
+                                         STOCKING_DAT_SOURCE == "Paula"~"Paula",
+                                         STOCKING_DAT_SOURCE == "AM"~"AM",
+                                         NO_STOCK_2 == "N" ~ "Paula2"))%>%
+  select(1:29, 38:41) # only keep necessary columns
+
+### Returned Data from Paula, Pre-2010 Surveys, added 8.9.2021
+Paula_Stocking_pre2010 <- read_excel("Missing_Stocking_Updated_Pre_2010_Paula.xlsx")
+# Prep for join by removing excess columns, and renaming FRY, FRL, FGL, YRL
+Pre2010_stocking <- Paula_Stocking_pre2010 %>%
+  select(DOW_KITTLE, SURVEY_YEAR, FRY, FRL, FGL, YRL)%>%
+  rename(FRY6 = FRY, FRL6 = FRL, FGL6 = FGL, YRL6 = YRL)
+
+EF_Stock_Steve_Paula_AM_Edit_3 <- EF_Stock_Steve_Paula_AM_Edit_2 %>%
+  left_join(Pre2010_stocking, by = c("DOW_KITTLE" = "DOW_KITTLE", "SURVEY_YEAR"="SURVEY_YEAR"))%>%
+  mutate(FRY7 = case_when(FRY6 == "Y" ~ "Y", #add in Paula's new data (had more info for some places we didn't think were stocked but they were)
+                          FRY6 == "N" ~ "N",
+                          FRY5 == "N" ~ "N",
+                          FRY5 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(FRL7 = case_when(FRL6 == "Y" ~ "Y",
+                          FRL6 == "N" ~ "N",
+                          FRL5 == "N" ~ "N",
+                          FRL5 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(FGL7 = case_when(FGL6 == "Y" ~ "Y",
+                          FGL6 == "N" ~ "N",
+                          FGL5 == "N" ~ "N",
+                          FGL5 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(YRL7 = case_when(YRL6 == "Y" ~ "Y",
+                          YRL6 == "N" ~ "N",
+                          YRL5 == "N" ~ "N",
+                          YRL5 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(STOCKING_DAT_SOURCE = case_when(STOCKING_DAT_SOURCE == "Steve"~"Steve", #datasource column so we know where data are from
+                                         STOCKING_DAT_SOURCE == "Paula"~"Paula",
+                                         STOCKING_DAT_SOURCE == "AM"~"AM",
+                                         FRY6 == "N" ~ "Paula3", #want to use Paula 3 data preferentially over Paula 2 (updated)
+                                         FRY6 == "Y" ~ "Paula3",
+                                         STOCKING_DAT_SOURCE == "Paula2"~"Paula2"))%>%
+  select(1:29, 38:41) #only keep columns of interest
+###################################################################################################################
+# Final data dump of stocking data, confirmed lakes that weren't stocked via LakeFinder
+LakeFinder_Stocking <- read_excel("Stocking_Verification_LakeFinder.xlsx")
+
+LakeFinder_Stocking_working<- LakeFinder_Stocking %>%
+  mutate(DOW_KITTLE = str_pad(DOW_KITTLE, 8, side = "left", pad = "0"))%>%
+  select(DOW_KITTLE, SURVEY_YEAR, FRY, FRL, FGL, YRL, STOCKING_DAT_SOURCE)%>%
+  rename(FRY8 = FRY, FRL8 = FRL, FGL8 = FGL, YRL8 = YRL, stocking_dat_source2 = STOCKING_DAT_SOURCE)
+  
+
+EF_Stock_Steve_Paula_AM_Edit_4 <- EF_Stock_Steve_Paula_AM_Edit_3 %>%
+  left_join(LakeFinder_Stocking_working, by = c("DOW_KITTLE" = "DOW_KITTLE", "SURVEY_YEAR"="SURVEY_YEAR"))%>%
+  mutate(FRY9 = case_when(FRY7 == "N" ~ "N",
+                          FRY7 == "Y" ~ "Y",
+                          FRY8 == "N" ~ "N",
+                          FRY8 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(FRL9 = case_when(FRL7 == "N" ~ "N",
+                          FRL7 == "Y" ~ "Y",
+                          FRL8 == "N" ~ "N",
+                          FRL8 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(FGL9 = case_when(FGL7 == "N" ~ "N",
+                          FGL7 == "Y" ~ "Y",
+                          FGL8 == "N" ~ "N",
+                          FGL8 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(YRL9 = case_when(YRL7 == "N" ~ "N",
+                          YRL7 == "Y" ~ "Y",
+                          YRL8 == "N" ~ "N",
+                          YRL8 == "Y" ~ "Y",
+                          TRUE ~ "NA"))%>%
+  mutate(STOCKING_DAT_SOURCE = case_when(STOCKING_DAT_SOURCE == "Steve"~"Steve", #datasource column so we know where data are from
+                                         STOCKING_DAT_SOURCE == "Paula"~"Paula",
+                                         STOCKING_DAT_SOURCE == "AM"~"AM",
+                                         FRY8 == "N" ~ paste(stocking_dat_source2),
+                                         FRY8 == "Y" ~ paste(stocking_dat_source2),
+                                         STOCKING_DAT_SOURCE == "Paula2"~"Paula2",
+                                         STOCKING_DAT_SOURCE == "Paula3" ~ "Paula3"))%>%
+  select(1:29, 39:42)%>%
+  filter(STOCKING_DAT_SOURCE == "LakeFinder") #only keep columns of interest
+
+# Remove surveys that DNR Area Managers indicated did NOT target walleye 
+AM_Survey_Check <- read_excel("Updated_EF_Surveys/ALL_Surveys_Updated.xlsx")
+
+AM_Survey_Edit <- AM_Survey_Check %>%
+  mutate(DOW_KITTLE = str_pad(DOW_KITTLE, 8, side = "left", pad = "0"))%>% #ensure DOW is 8 digits so it can join properly below
+  select(DOW_KITTLE, SURVEY_YEAR, AM_CONF_WAE_TARGET) #keep joining columns and column of interest
+
+#2,634 surveys NOW 2,574as of 8.13.2021 when changed joining mechanism from Survey ID to DOW and Year (because excel only has 15 sig figs)
+EF_List <- EF_Stock_Steve_Paula_AM_Edit_4 %>%
+  left_join(AM_Survey_Edit, by = c("DOW_KITTLE" = "DOW_KITTLE", "SURVEY_YEAR"="SURVEY_YEAR"))%>%
+  filter(AM_CONF_WAE_TARGET == "Y" | is.na(AM_CONF_WAE_TARGET)) %>% #now 2,574 surveys #removes surveys that didn't target WAE
+  select(-AM_CONF_WAE_TARGET)%>%
+  rename(FRY = FRY9, FRL = FRL9, FGL = FGL9, YRL = YRL9) 
+
+WAE_Stocking_only <- EF_List %>%
+  select(2:5, 14, 30:33)%>%
+  rename(YEAR = SURVEY_YEAR)
+
+write_csv(WAE_Stocking_only, "MN_WAE_Stocking_final.csv")
+```
+
+```
+# Where are we still Missing Stocking Data??
+Missing_Stocking <- EF_List %>%
+  filter(is.na(STOCKING_DAT_SOURCE))%>%
+  select(1:6,8)%>%
+  arrange(DOW_KITTLE,SURVEY_YEAR)
+
+#write.csv(Missing_Stocking, "Missing_Stocking.csv", row.names = FALSE) 
+
+Missing_Stocking_Updated <- Missing_Stocking %>%
+  full_join(Paula_Stocking_Working, by = "DOW_KITTLE")%>%
+  filter(is.na(MANAGING_AREA))%>%
+  select(-8, -9, -10, -11, -12)%>%
+  rename(WATER_BODY_NAME = WATER_BODY_NAME.x)%>%
+  filter(DOW_KITTLE != 28000100)%>% # Remove U.S Lock and Dam Pools
+  filter(DOW_KITTLE != 85000200)%>%
+  filter(DOW_KITTLE != 85001300)%>%
+  filter(DOW_KITTLE != 79000100)%>%
+  filter(DOW_KITTLE != 25001700)%>%
+  arrange(DOW_KITTLE,SURVEY_YEAR)
+
+
+Missing_Stocking_Updated_Pre_2010 <- Missing_Stocking_Updated %>%
+  mutate(FishPad = "No Data in FishPad")%>%
+  select(SURVEY_ID, DOW_KITTLE, FishPad)%>%
+  full_join(Missing_Stocking, by = c("SURVEY_ID", "DOW_KITTLE"))%>%
+  filter(SURVEY_YEAR < 2010)
+  
+#write.csv(Missing_Stocking_Updated_Pre_2010, "Missing_Stocking_Updated_Pre_2010.csv", row.names = FALSE) 
+Missing_Stocking_Updated_Pre_2010_Lk <- Missing_Stocking_Updated_Pre_2010 %>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Number_of_Surveys = n())
+#write.csv(Missing_Stocking_Updated_Pre_2010_Lk, "Missing_Stocking_Lake_List.csv", row.names = FALSE)
+
+Missing_Stocking2 <- EF_List %>%
+  filter(is.na(STOCKING_DAT_SOURCE))%>%
+  select(1:6,8)%>%
+  arrange(DOW_KITTLE,SURVEY_YEAR)%>%
+  group_by(DOW_KITTLE, )%>%
+  summarise(Years_per_Lake = n())%>%
+  ungroup()
+
+#write.csv(Missing_Stocking2, "Missing_Stocking_by_Lake.csv", row.names = FALSE)
+
+```
+
+# Pull in Temp and other dynamic variables
+```{r}
+# Data from Gretchen, sent on Slack 3/8/21
+
+daily_degree_days_MN_lakes_glm2 <- readRDS("C:/Users/kunde058/Documents/ZM_WAE_Summaries/daily_degree_days_MN_lakes_glm2.rds")
+
+# Load in new modeled temp data
+# CAUTION DON'T RUN LINES 387 - 395 IF NOT NECESSARY, VERY SLOW
+New_Temp <- daily_degree_days_MN_lakes_glm2 %>%
+  filter(Year >=1989) %>% # filtered here to reduce size of HUGE data set
+  select(date, temp_0, DOW, MNDOW_ID, Year, DD5, DD0)%>% # select wanted columns to shrink data set
+  mutate(dow = str_replace(MNDOW_ID,"mndow_", "")) %>%
+  mutate(date = ymd(date))%>%
+  mutate(month = month(date))%>%
+  filter(month >= 8)%>% #filter for month to shrink data set again
+  mutate(day = day(date))%>%
+  mutate(Join_ID = str_c(dow, Year, month, day, sep=".", collapse = NULL)) #create a unique ID with DOW and date for joining
+  
+
+
+#Join EF and Lake_Temp_Download:
+EF_List_Temp <- EF_List %>%
+  mutate(month = month(SURVEY_ID_DATE))%>%
+  mutate(day = day(SURVEY_ID_DATE))%>%
+  mutate(Join_ID = str_c(DOW_KITTLE, SURVEY_YEAR, month, day, sep=".", collapse = NULL))%>%
+  left_join(New_Temp, by = "Join_ID")%>%
+  select(-45, -46)%>% #remove duplicate "month" and "day columns"
+  mutate(MODELED_TEMP_F = temp_0*(9/5)+32)%>%
+  mutate(SURFACE_TEMP_F = case_when(WATER_TEMP_F < 32 ~ paste(MODELED_TEMP_F),# keep recorded temp if above 32 F, otherwise modeled temp
+                                    WATER_TEMP_F >= 32 ~ paste(WATER_TEMP_F),
+                                    is.na(WATER_TEMP_F) ~ paste(MODELED_TEMP_F),
+                                    TRUE ~ "NA"))
+           
+           
+# How many surveys do we not have temp data for?
+
+EF_Temp_NA <- EF_List_Temp %>%
+  filter(is.na(DD5))%>% #405
+  filter(is.na(WATER_TEMP_F)) %>%
+  mutate(DROP = paste("DROP"))%>% #28 surveys with no modeled temp and no recorded temp, will drop these above
+  select(SURVEY_ID, DROP)
+
+EF_List_Temp_2 <- EF_List_Temp %>%
+  filter(SURFACE_TEMP_F >= 50)%>% # filer for appropriate water temp
+  filter(SURFACE_TEMP_F <= 69.8)%>%
+  left_join(EF_Temp_NA, by = "SURVEY_ID")%>%
+  filter(is.na(DROP))%>% #remove surveys that we don't have temp data for
+  select(-DROP, -dow, -DATE, -YEAR, -MONTH, -month.x, -day.x, -Join_ID, -date, -Year, -DOW, -temp_0, -MNDOW_ID) #remove duplicated and columns that are no longer needed
+
+# After filtering for temp, down to 1981 surveys
+```
+
+
+# Pull in other lake predictors: static and annual medians
+```{r}
+# ANNUAL MEDIAN SECCHI
+Annual_Med_Secchi_KV <- read_csv('Lake_Predictors/annual_median_secchi_KV_model.csv') #from Kelsey's model
+Annual_Med_Secchi_KV_2 <- Annual_Med_Secchi_KV %>%
+  select(2:4)%>%
+  mutate(SECCHI_SOURCE = paste("KV")) # KV for Kelsey Vitense's Model
+
+Annual_Med_RS_Secchi <- read_csv('Lake_Predictors/annual_median_remote_sensing_secchi.csv') #remote sensed secchi
+Annual_Med_RS_Secchi_2 <- Annual_Med_RS_Secchi %>%
+  select(6, 3, 4)%>%
+  mutate(SECCHI_SOURCE = paste("RS")) #RS for Remote Sensed Data
+
+Observed_Secchi <- read_csv('Lake_Predictors/secchi_observed_annual_median.csv')%>%
+  select(-4)%>%
+  mutate(Source = paste("Obs")) # observed secchi, takes priority over remote sensed data
+
+Annual_Median_Secchi <- Annual_Med_Secchi_KV_2 %>%
+  full_join(Annual_Med_RS_Secchi_2, by = c("DOW"= "DOW", "Year"="year"))%>%
+  full_join(Observed_Secchi, by = c("DOW" = "DOW", "Year" = "Year"))%>%
+  mutate(ANNUAL_MED_SECCHI_M = case_when(SECCHI_SOURCE.x == "KV" ~ paste(median.secchi.m),
+                                         Source == "Obs" & is.na(SECCHI_SOURCE.x) ~ paste(annual.median.secchi),
+                                         is.na(SECCHI_SOURCE.x) & is.na(Source) ~ paste(annual.median.rs),
+                                         TRUE ~ "NA"))%>%
+  mutate(SECCHI_SOURCE = case_when(SECCHI_SOURCE.x == "KV" ~ "KV",
+                                   Source == "Obs" & is.na(SECCHI_SOURCE.x) ~ "Obs",
+                                   is.na(SECCHI_SOURCE.x) & is.na(Source) ~ "RS",
+                                   TRUE ~ "NA"))%>%
+  select(DOW, Year, ANNUAL_MED_SECCHI_M, SECCHI_SOURCE) # using Kelsey's secchi if available, 2nd choice is observed secchi, otherwise using remote sensed
+
+#write.csv(Annual_Median_Secchi, "Annual_Median_Secchi_meters_multiple_sources.csv", row.names = FALSE)
+
+# Static Lake Characteristics
+Static_Lk <- read_csv('Lake_Predictors/static_lake_predictors.csv')%>%
+  select(1,2,3,5,6)%>%
+  mutate(DOW = str_pad(DOW, 8, side = "left", pad = "0"))
+
+lake_predictors_HMSC <- read_csv('Lake_Predictors/lake_predictors_for_HMSC.csv')
+lake_predictors_HMSC_2 <- lake_predictors_HMSC %>%
+  select(-4,-6,-7)%>%
+  mutate(DOW = str_pad(DOW, 8, "left", pad = "0"))
+
+Static_2 <- Static_Lk %>%
+  full_join(lake_predictors_HMSC_2, by = "DOW")%>%
+  select(-4,-5,-8)%>%
+  mutate(AREA_HECTARES = case_when(area.hectares.x>0 ~ paste(area.hectares.x), 
+                                   area.hectares.y>0 ~ paste(area.hectares.y)))%>%
+  mutate(MAX_DEPTH_M = case_when(max_depth_m.x>0 ~ paste(max_depth_m.x), 
+                                   max_depth_m.y>0 ~ paste(max_depth_m.y)))%>%
+  select(DOW, AREA_HECTARES, MAX_DEPTH_M)
+       
+# ANNUAL GDD ### use this to calculate LAKE LEVEL
+Annual_GDD <- read_csv('Lake_Predictors/mn_annual_gdd_with_DOW.csv')%>%
+  select(5,2,3)
+
+# Lake Level GDD was added later than other metrics
+Lake_Level_GDD <- Annual_GDD %>%
+  filter(year >= 1993) %>% #most data is 1993 or later, dont' need 1980 - 1992
+  group_by(DOW)%>%
+  summarise(MEDIAN_93_19_GDD = median(gdd_wtr_5c))                           
+
+##########################################
+#compare lake characteristics
+invaded=unique(mydata%>%filter(ZM=="zebra mussel")%>%select(DOW_KITTLE, ZM, AREA_HECTARES,  MAX_DEPTH_M, MEDIAN_93_19_GDD))
+
+uninvaded=unique(mydata%>%filter(ZM=="uninvaded")%>%select(DOW_KITTLE, ZM, AREA_HECTARES,   MAX_DEPTH_M, MEDIAN_93_19_GDD))
+
+lake.list=rbind(invaded, uninvaded)
+###########################################
+
+
+#Add Secchi, GDD, and Static predictors to Data Set. 
+EF_Temp_LkP <- EF_List_Temp_2 %>%
+  left_join(Annual_Median_Secchi, by = c("DOW_KITTLE"= "DOW", "SURVEY_YEAR"="Year"))%>%
+  left_join(Annual_GDD, by = c("DOW_KITTLE"= "DOW", "SURVEY_YEAR"="year"))%>%
+  left_join(Static_2, by = c("DOW_KITTLE"= "DOW"))%>%
+  left_join(Lake_Level_GDD, by = c("DOW_KITTLE"= "DOW"))
+  
+  
+# Other lake characteristics
+## - Lat long, sore length etc...
+LakeList <- read_csv('LakeList.csv') #lake data from Gretchen
+LakeList_Usable <- LakeList %>%
+  mutate(PARENT_DOW = str_pad(DOW_NBR_PRIMARY, 6, side = "left", pad = "0"))%>%
+  select(LAKE_CENTER_LAT_DD5, LAKE_CENTER_LONG_DD5, LAKE_CENTER_UTM_EASTING, LAKE_CENTER_UTM_NORTHING, SHORE_LENGTH_MILES, PARENT_DOW)
+```
+
+### Add in Catch Data and Zebra Mussel Data
+# Raw fish Data from Jon
+Read in Data: Raw WAE data (one line per fish, 4 regions)
+```{r, message = FALSE, warning = FALSE}
+WAE_raw_Central <- read_csv('WAE_RAW_CENTRAL_20200407.csv', guess_max = 100000)
+WAE_raw_NE <- read_csv('WAE_RAW_NE_20200407.csv', guess_max = 200000)
+WAE_raw_NW <- read_csv('WAE_RAW_NW_20200407.csv', guess_max = 200000)
+WAE_raw_South <- read_csv('WAE_RAW_SOUTH_20200407.csv', guess_max = 50000)
+#guess max needs to be raised above 1000 (the default) because there are so many NAs in the OFF_AGE column that it was pulling in TRUE, FALSE and NA instead of the numeric ages and NAs
+```
+
+
+# Filtering Using the Effort Data (make the catch data more manageable to work with)
+### Central Region
+```{r}
+Central_Raw_E <- WAE_raw_Central %>%
+  mutate(OFF_AGE = as.numeric(OFF_AGE))%>% # change from Boolean to numeric 
+  semi_join(EF_Temp_LkP, by = c("ID_NBR" = "DOW_KITTLE"))%>% # semi_join returns rows of x that have a match in y
+  mutate(Date = mdy(SRVY_DT)) %>% # use lubridate to parse mdy
+  mutate(Year = year(Date))%>% # create a column with the year the survey was done
+  mutate(Month = month(Date)) %>% 
+  filter(Month >= 08) %>%
+  mutate(Region = "Central") %>%
+  filter(GEARTP == "EF" | GEARTP == "EW" | GEARTP == "SEF")%>%
+  filter(YOY == "Y" | OFF_AGE == "0") # only want YOY fish
+
+```
+- Updated Effor 1/19/21, filtered month, gear type, water temp -> 19,478
+- 55821 observations, 23,224 once filtered for gear type, 19776 YOY (updated 11/2/20 19558)
+- 120,732 obs (RAW data) to 91,736 (Steve's Lakes) to 15,170 (post 2014 in August or later)
+
+### North East Region
+```{r}
+NE_Raw_E <- WAE_raw_NE %>%
+  mutate(OFF_AGE = as.numeric(OFF_AGE))%>%
+  mutate(ID_NBR = str_pad(ID_NBR, 8, side = "left", pad = "0"))%>% #add zero to front of 7 digit dows so all are 8 digits
+  mutate(ID_NBR = as.character(ID_NBR))%>%  #### must add ZEROS FIRST
+  semi_join(EF_Temp_LkP, by = c("ID_NBR" = "DOW_KITTLE")) %>%
+  mutate(Date = mdy(SRVY_DT)) %>% # use lubridate to parse mdy
+  mutate(Year = year(Date))%>% # create a column with the year the survey was done
+  mutate(Month = month(Date)) %>% 
+  filter(Month >= 08)%>%
+  mutate(Region = "North East")%>%
+  filter(GEARTP == "EF" | GEARTP == "EW" | GEARTP == "SEF")%>%
+  filter(YOY == "Y" | OFF_AGE == "0") # only want YOY fish
+
+```
+-21,819 (updated 1/19/21)
+- 62,225 obs, 35,511 once filtered for gear type, 21,821 YOY (Updated 11.2.20)
+- 225,158 obs (RAW data) 
+- 115,150 (Steve's Lakes) to 8,054 (post 2014, August or later)
+
+### North West Region
+```{r}
+NW_Raw_E <- WAE_raw_NW %>%
+  mutate(OFF_AGE = as.numeric(OFF_AGE))%>%
+  semi_join(EF_Temp_LkP, by = c("ID_NBR" = "DOW_KITTLE")) %>%
+  mutate(Date = mdy(SRVY_DT)) %>% # use lubridate to parse mdy
+  mutate(Year = year(Date))%>% # create a column with the year the survey was done
+  mutate(Month = month(Date)) %>% 
+  filter(Month >= 08)%>%
+  mutate(Region = "North West")%>%
+  filter(GEARTP == "EF" | GEARTP == "EW" | GEARTP == "SEF")%>%
+  filter(YOY == "Y" | OFF_AGE == "0") # only want YOY fish
+
+```
+- 18, 533 updated 1/19/21
+- 61,787 obs, 25,058 once filtered for gear type, 18,822 YOY (Updated 11.2.20 18533)
+- 246,405 obs (RAW data) to 125,408 (Steve's Lakes) to 7,617 (post 2014 and August or later)
+
+### South Region
+```{r}
+South_Raw_E <- WAE_raw_South %>%
+  mutate(OFF_AGE = as.numeric(OFF_AGE))%>%
+  semi_join(EF_Temp_LkP, by = c("ID_NBR" = "DOW_KITTLE")) %>%
+  mutate(Date = mdy(SRVY_DT)) %>% # use lubridate to parse mdy
+  mutate(Year = year(Date))%>% # create a column with the year the survey was done
+  mutate(Month = month(Date)) %>% 
+  filter(Month >= 08)%>%
+  mutate(Region = "South")%>%
+  filter(GEARTP == "EF" | GEARTP == "EW" | GEARTP == "SEF")%>%
+  filter(YOY == "Y" | OFF_AGE == "0") # only want YOY fish
+
+```
+- 31,931 updated 1/19/21
+- 75,280 obs, 46,985 once filtered for gear type, 33,734  (Updated 11.2.20 32,291)
+- 172,459 (RAW data) to 157,787 (Steve's Lakes) to 12,783 (post 2014 and August or later)
+
+### Combine fish from the same survey using `SURVEY_ID` and 'GEARTP` to find **CATCH**
+```{r, warning=FALSE}
+Central_Grouped <- Central_Raw_E %>%
+  group_by(SURVEY_ID, GEARTP) %>% #need gear type for the duplicate survey IDs (may combine later)
+  summarise(TOTAL_CATCH = n()) # sums fish from same survey #300 -> 316
+
+NE_Grouped <- NE_Raw_E %>%
+  group_by(SURVEY_ID, GEARTP) %>% #need gear type for the duplicate survey IDs (may combine later)
+  summarise(TOTAL_CATCH = n()) # sums fish from same survey #350 -> 350
+
+NW_Grouped <- NW_Raw_E %>%
+  group_by(SURVEY_ID, GEARTP) %>% #need gear type for the duplicate survey IDs (may combine later)
+  summarise(TOTAL_CATCH = n()) # sums fish from same survey #503 -> 514
+
+South_Grouped <- South_Raw_E %>%
+  group_by(SURVEY_ID, GEARTP) %>% #need gear type for the duplicate survey IDs (may combine later)
+  summarise(TOTAL_CATCH = n()) # sums fish from same survey #701 -> 714
+
+```
+
+## Combine all Regions for the Raw Fish Data
+```{r}
+# Combine NE and Central
+Central_NE <- Central_Grouped %>%
+  bind_rows(NE_Grouped, id = NULL) #316 (central) + 350 (NE) = 666 (yikes) obs
+# Combine NW and South
+NW_South <- NW_Grouped %>%
+  bind_rows(South_Grouped, id = NULL) #514(NW) +714 (South) = 1228 obs
+#Combine Previous two groups so all four regions are in same df
+All_Regions <- Central_NE %>%
+  bind_rows(NW_South, id = NULL) # 1928 (updated 8.31.20), 1881 (updated 11.2.20)), 1854 (updated 1.19.21), 1894 (updated 6.16.21)
+
+#write_csv(All_Regions, "lakes_w_WAE_data.csv")
+```
+
+### Bring in ZM data
+Infested Waters Data: Updated 8/10/2021 https://www.dnr.state.mn.us/invasives/ais/infested.html
+```{r}
+IW_excel_7.23.21 <- read_excel('infested-waters.xlsx', range = "A2:F1221") # range removes DNR header row so proper column names applied
+## Note, check and edit cell range if Infested Waters list is updated
+# Still up to date as of 7/22/2021
+
+IW <- IW_excel_7.23.21 %>% 
+  rename(dow = 6) %>%
+  rename(Water_Body_Name = 1) %>%
+  rename (County = 2) %>%
+  rename(AIS_Species = 3) %>%
+  rename(Year_Infested = 4)%>%
+  rename (Year_Confirmed = 5)%>%
+  select(dow,Water_Body_Name,County,AIS_Species,Year_Infested,Year_Confirmed)%>%
+  filter(!dow == "none")%>% #removes rows where DOW is listed as "none"
+  filter(!dow == "none, part of Winnibigoshish") %>%
+  filter(!dow == "NA")%>% #removes rows where DOW is listed as "NA"
+  filter(!dow == "na")%>% #THIS SHOULDN'T BE NECESSARY BUT IT IS
+  drop_na(dow) #remove actual NAs (actual blanks in the spreadsheet)
+
+
+####Must reformat DOW (currently 6 digits with dash)
+IW_fixed <- IW %>% mutate(dow = gsub("-","",IW$dow)) %>% # removes all dashes from dow IW_nodash$dow
+  mutate(DOW = str_pad(dow,8, side="right", pad= "0")) %>% 
+  rename(parent_dow=dow) # parent dow is first 6 digits, last 2 digits specify basins if necessary otherwise are 00
+
+IW_parent_dow <- IW_fixed %>%
+  mutate(PARENT_DOW2 = str_trunc(IW_fixed$DOW, ellipsis= "", side = "right",6))%>% #remove final 2 digits to get parent dow from ones already 8 digits long
+  mutate(PARENT_DOW = str_trim(PARENT_DOW2, side = "right"))%>%
+  select(-PARENT_DOW2, - parent_dow, -Year_Confirmed)
+
+#Want Just ZM
+ZM <- IW_parent_dow %>% 
+  filter(AIS_Species== "zebra mussel") %>%
+  filter(!is.na(DOW)) %>%  #filters out rivers and creeks (anything without a DOW) #453 lakes
+  select(AIS_Species, Year_Infested, PARENT_DOW) # Nov. 2020: 411, DNR says 408..? June 2021: I get 415
+
+```
+
+## Combine the Catch data with the Effort Data
+```{r}
+# adding the raw fish data to the effort. Any NA in the catch column will be changed to a 0. 
+CPUE <- EF_Temp_LkP %>%
+  left_join(All_Regions, by = "SURVEY_ID", c("SAMP_STA_TYPE_ABBREV"= "GEARTP")) %>% # combine catch   and effort by survey ID and gear type
+  mutate(TOTAL_CATCH = coalesce(TOTAL_CATCH, 0L)) %>% #change catch NAs to 0s
+  mutate(CPUE = TOTAL_CATCH/EFFORT) %>% # calculate CPUE
+  mutate(PARENT_DOW = str_trunc(DOW_KITTLE, side = "right", ellipsis = "", 6)) %>% #to join with IW
+  left_join(ZM, by = "PARENT_DOW")%>% # add zebra mussel data
+  rename(YEAR_INFESTED = Year_Infested) %>%
+  rename(ZM = AIS_Species) %>%
+  mutate(PRE_ZM = ifelse(SURVEY_YEAR <= YEAR_INFESTED, 1, 0))%>% #so we can tally the number of years wih data pre-invasion
+  mutate(POST_ZM = ifelse(SURVEY_YEAR > YEAR_INFESTED, 1, 0))%>%
+  mutate(INVASION_STATUS = ifelse(POST_ZM > 0, "POST_ZM", "PRE_ZM"))%>%
+  mutate(INVASION_STATUS = replace_na(INVASION_STATUS, "NO_ZM")) %>%
+  mutate(INVASION_STATUS_BINARY = ifelse(POST_ZM == 1, 1, 0)) %>%
+  mutate(INVASION_STATUS_BINARY = coalesce(INVASION_STATUS_BINARY, 0L))%>%
+  mutate(ZM = coalesce(ZM, "uninvaded"))%>%
+  mutate(RECRUITMENT_SUCCESS = ifelse(CPUE >= 15, 1, 0)) %>% #recruitment success is defined by CPUE of 15
+  left_join(LakeList_Usable, by ="PARENT_DOW") %>% #duplicates introduced here
+  distinct_at(vars(SURVEY_ID, DOW_KITTLE), .keep_all = TRUE )%>%
+  select(-COMPONENT_COUNT, -CPUE_INCLUDED_COUNT, -CPUE_EXCLUDED_COUNT, -GEARTP)%>% #remove unnecessary columns
+  rename(ANNUAL_GDD_5C = gdd_wtr_5c)%>%
+  select(-SURVEY_ID_DATE) %>%
+  mutate(STOCKED = case_when(FRY == "Y" ~ "Y",
+                             FRL == "Y" ~ "Y",
+                             TRUE ~ "N"))%>%
+  filter(FGL == "N") # now 1637 surveys, previously 1973, updated 8.13.2021
+
+ZM_Lakes <- CPUE %>%
+  filter(POST_ZM ==1)%>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Total = n())%>%
+  mutate(ZM_LAKE = "Y")%>%
+  select(DOW_KITTLE, ZM_LAKE)
+
+Calculated_CPUE <- CPUE %>%
+  left_join(ZM_Lakes, by = "DOW_KITTLE")%>%
+  mutate(ZM_LAKE = replace_na(ZM_LAKE, "N"))%>%
+  mutate(ZM_2019 = case_when(YEAR_INFESTED <= 2019 ~ ZM,
+                             YEAR_INFESTED > 2019 ~ "uninvaded",
+                             is.na(YEAR_INFESTED) ~ "uninvaded"))
+
+#HOW THIS SHOULD HAVE BEEN, keeping the incorrect version because that is what was initially used for model
+mutate(ZM_2019 = case_when(ZM_LAKE == "Y" & YEAR_INFESTED <= 2019 ~ "ZM",
+                             ZM_LAKE == "Y" & YEAR_INFESTED > 2019 ~ "uninvaded",
+                             ZM_LAKE == "N" ~ "uninvaded",
+                             is.na(YEAR_INFESTED) ~ "uninvaded")) #fixed 11.11.2021
+##########################################################################################
+Test <- Calculated_CPUE %>%
+  group_by(DOW_KITTLE)%>%
+  summarise(tot = n()) #350 lakes
+
+Calculated_CPUE[is.na(Calculated_CPUE$ZM_LAKE)] = paste("N")
+#write.csv(Calculated_CPUE, "Calculated_CPUE_8.16.21.csv", row.names = FALSE)
+
+# Updated below on 11/15/2021
+Calculated_CPUE_November <- Calculated_CPUE %>%
+  filter(SURVEY_YEAR >= 1993)%>%
+  mutate(ZM_LAKE = case_when(ZM_LAKE == "Y" ~  1,
+                             ZM_LAKE == "N" ~ 0))%>% #change to binary for easier time modeling
+  filter(FGL == "N")%>% #remove FGL stockings before survey
+  drop_na(ANNUAL_MED_SECCHI_M)%>% #drop NAs where missing Secchi data
+  drop_na(ANNUAL_GDD_5C)%>% #drop NAs from temp model
+  drop_na(AREA_HECTARES)%>% # drop NAs from static lake variables
+  filter(NUMBER_OF_NETTERS > 0)%>% #remove two sruveys where number of netters is 0, help w/ log transformation later
+  mutate(STOCKED = case_when(FRY == "Y" ~ 1,
+                             FRL == "Y" ~ 1,
+                             TRUE ~ 0)) #new stocked column, sets it up as binary
+
+ library(readxl)
+EF_Rainy_shore <- read_excel("EF_Data_11.15.21.xlsx")
+
+EF_Data_11.22.21 <- EF_Rainy_shore
+# write_csv(Calculated_CPUE_November, "EF_DATA_11.15.21.csv")
+write_csv(EF_Data_11.22.21, "EF_DATA_11.22.21.csv")
+
+
+Stocking_check_8.13 <- CPUE %>%
+  filter(is.na(ANNUAL_MED_SECCHI_M))#74 without secchi, after remove FGL == Y now 66
+#write.csv(Stocking_check_8.13, "LAST_STOCKING_CHECK.csv", row.names = FALSE)
+
+
+
+# number of unique lakes:
+length(unique(CPUE$DOW_KITTLE))
+
+#Number of ZM lakes
+ZM_lks <- CPUE %>%
+  filter(POST_ZM ==1)%>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Total = n())
+
+ZM_lks <- CPUE %>%
+  filter(ZM == "zebra mussel")%>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Total = n())
+
+Num_Lakes <- CPUE %>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Total_Surveys = n())
+
+```
+
+Compare ZM lakes to non-ZM lakes
+```{r}
+EF_Final <- read.csv('NN_invasion_CPE_data.csv')
+
+EF_Final_Working <- EF_Final%>%
+  mutate(DOW_KITTLE = str_pad(DOW_KITTLE, 8, side = "left", pad = "0"))%>%
+  filter(SURVEY_YEAR >= 1993)
+
+No_ZM_List<- EF_Final%>%
+  filter(ZM_2019 == "uninvaded")#1136
+mean(No_ZM_List$SURVEY_YEAR)
+mean(No_ZM_List$EFFORT)
+mean(No_ZM_List$NUMBER_OF_NETTERS)
+mean(No_ZM_List$DD5, na.rm = TRUE)
+mean(No_ZM_List$DD0, na.rm = TRUE)
+mean(No_ZM_List$SURFACE_TEMP_F)
+mean(No_ZM_List$ANNUAL_MED_SECCHI_M, na.rm = TRUE)
+mean(No_ZM_List$ANNUAL_GDD_5C, na.rm = TRUE)
+mean(No_ZM_List$AREA_HECTARES, na.rm = TRUE)
+mean(No_ZM_List$MAX_DEPTH_M, na.rm = TRUE)
+mean(No_ZM_List$MEDIAN_93_19_GDD, na.rm = TRUE)
+mean(No_ZM_List$CPUE)
+mean(No_ZM_List$SHORE_LENGTH_MILES, na.rm = TRUE)
+
+
+ZM_List_EF <- EF_Final %>%
+  filter(ZM_2019 == "zebra mussel")#501
+mean(ZM_List_EF$SURVEY_YEAR)
+mean(ZM_List_EF$EFFORT)
+mean(ZM_List_EF$NUMBER_OF_NETTERS)
+mean(ZM_List_EF$DD5, na.rm = TRUE)
+mean(ZM_List_EF$DD0, na.rm = TRUE)
+mean(ZM_List_EF$SURFACE_TEMP_F)
+mean(ZM_List_EF$ANNUAL_MED_SECCHI_M, na.rm = TRUE)
+mean(ZM_List_EF$ANNUAL_GDD_5C, na.rm = TRUE)
+mean(ZM_List_EF$AREA_HECTARES, na.rm = TRUE)
+mean(ZM_List_EF$MAX_DEPTH_M, na.rm = TRUE)
+mean(ZM_List_EF$MEDIAN_93_19_GDD, na.rm = TRUE)
+mean(ZM_List_EF$CPUE)
+mean(ZM_List_EF$SHORE_LENGTH_MILES, na.rm = TRUE)
+
+ZM_PRE_List <- EF_Final %>%
+  filter(YEAR_INFESTED <= 2019)%>%
+  filter(INVASION_STATUS == "PRE_ZM") #482 -> 382
+
+mean(ZM_PRE_List$ANNUAL_MED_SECCHI_M, na.rm = TRUE)
+
+ZM_POST_List <- EF_Final %>%
+  filter(YEAR_INFESTED <= 2019)%>%
+  filter(INVASION_STATUS == "POST_ZM") #119
+
+mean(ZM_POST_List$ANNUAL_MED_SECCHI_M, na.rm = TRUE)
+
+Category_EF <- EF_Final %>%
+  mutate(CATEGORY = case_when(INVASION_STATUS == "PRE_ZM" ~ "PRE_ZM",
+                              INVASION_STATUS == "POST_ZM" ~ "POST_ZM",
+                              INVASION_STATUS == "NO_ZM" & YEAR_INFESTED.y > year ~ "NO_ZM_PRE",
+                              INVASION_STATUS == "NO_ZM" & YEAR_INFESTED.y <= year ~ "NO_ZM_POST",
+                              TRUE ~ "NA") )%>%
+  dplyr::select(3, 15, 19, 28, 31, 32, 34:37, 39, 52, 60)%>%
+  drop_na(DD5, ANNUAL_MED_SECCHI_M, ANNUAL_GDD_5C, AREA_HECTARES, MAX_DEPTH_M, MEDIAN_93_19_GDD, SHORE_LENGTH_MILES)%>%
+  group_by(CATEGORY)%>%
+  summarise_all(.funs = c(MEAN ="mean",MAX = "max", MIN = "min"))
+
+write.csv(Category_EF, "Variable_Summaries.csv", row.names = FALSE)
+
+# % of surveys that took place during a year that stocking occurred
+## old 
+Percent_Stocking <- EF_Final_Working %>%
+  mutate(STOCKING_PERCENTAGE = case_when(STOCKED == "Y" ~ 1,
+                                         STOCKED == "N" ~ 0))%>%
+  mutate(CATEGORY = case_when(INVASION_STATUS == "PRE_ZM" ~ "PRE_ZM",
+                              INVASION_STATUS == "POST_ZM" ~ "POST_ZM",
+                              INVASION_STATUS == "NO_ZM" & YEAR_INFESTED.y > year ~ "NO_ZM_PRE",
+                              INVASION_STATUS == "NO_ZM" & YEAR_INFESTED.y <= year ~ "NO_ZM_POST",
+                              TRUE ~ "NA") )%>%
+  group_by(CATEGORY)%>%
+  summarise(STOCKED_SURVEYS = sum(STOCKING_PERCENTAGE), Tot_surveys = n())%>%
+  mutate(PERCENT_STOCKED= STOCKED_SURVEYS/Tot_surveys)
+  
+# PERCENT STOCKING NEW 11.11.2021
+  Percent_Stocking_NEW <- EF_Final_Working %>%
+  mutate(STOCKING_PERCENTAGE = case_when(STOCKED == "Y" ~ 1,
+                                         STOCKED == "N" ~ 0))%>%
+  mutate(CATEGORY = case_when(ZM_2019 == "zebra mussel" & year < YEAR_INFESTED ~ "PRE_ZM",
+                              ZM_2019 == "zebra mussel" & year >= YEAR_INFESTED ~ "POST_ZM",
+                              ZM_2019 == "uninvaded" & year < YEAR_INFESTED.y ~ "NO_ZM_PRE",
+                              ZM_2019 == "uninvaded" &  year >= YEAR_INFESTED.y ~ "NO_ZM_POST",
+                              is.na(YEAR_INFESTED.y)~ "NO_ZM_PRE",
+                              TRUE ~ "NA") )%>%
+  group_by(CATEGORY)%>%
+  summarise(STOCKED_SURVEYS = sum(STOCKING_PERCENTAGE), Tot_surveys = n())%>%
+  mutate(PERCENT_STOCKED= STOCKED_SURVEYS/Tot_surveys)
+
+```
+
+Messing around with the data
+```{r}
+library(RColorBrewer)
+Map_CPUE <- CPUE %>%
+  drop_na(gdd_wtr_5c)%>%
+  drop_na(ANNUAL_MED_SECCHI_M)%>%
+  drop_na(SURFACE_TEMP_F) #1883
+  
+
+MN <- map_data("state")%>% filter(region=="minnesota")
+MN_Counties <- map_data("county")%>%
+  filter(region == "minnesota")
+
+# color by CPUE
+EF_Lakes <- ggplot(data=MN_Counties, mapping = aes(x= long, y = lat, group=group)) + 
+  coord_fixed(1.3) +
+  geom_polygon(color= "gray88", fill = "gray75", alpha = .75)+
+  geom_point(data=CPUE, aes(x=LAKE_CENTER_LONG_DD5, y = LAKE_CENTER_LAT_DD5, group=25, color=CPUE,),alpha = 0.55, size =3) +
+  labs( title = "Lakes with walleye catch data", color = "CPUE",x= "Longitude", y ="Latitude") +
+  scale_color_viridis(option = "D", direction = 1, begin = 0, end = 1)
+EF_Lakes
+
+EF_WAE_ZM_data <- read_csv("EF_DATA_11.22.21.csv")
+
+# walleye lakes, ZM in red, rest in blue
+EF_Lakes_ZM <- ggplot(data = MN_Counties, mapping = aes(x = long, y = lat, group=group))+
+  coord_fixed(1.3) +
+  geom_polygon(color= "gray88", fill = "gray75", alpha = .36)+
+  geom_point(data=EF_WAE_ZM_data, aes(x= LAKE_CENTER_LONG_DD5, y = LAKE_CENTER_LAT_DD5, group=25, color=ZM_LAKE),alpha = 0.3, size =4) +
+  scale_color_brewer(palette = "Set1", direction = -1)+
+  labs( title = "Invaded Walleye Lakes", color = "ZM Invasion Status",x= "Longitude", y ="Latitude")+
+  theme_classic()+
+  theme(legend.position = "bottom")
+EF_Lakes_ZM
+
+# All ZM lakes as of Aug 2021
+ZM_Lat_Long <- ZM %>%
+  mutate(FULL_DOW = str_pad(PARENT_DOW, 8, side = "right", pad = "0"))%>%
+  left_join(LAT_LON, by = c("FULL_DOW"="dowlknum"))
+
+ALL_Lakes_ZM <- ggplot(data = MN_Counties, mapping = aes(x = long, y = lat, group=group))+
+  coord_fixed(1.3) +
+  geom_polygon(color= "gray88", fill = "gray75", alpha = .36)+
+  geom_point(data=ZM_Lat_Long, aes(x=lon, y =lat, group=25),alpha = 0.3, size =4) +
+  scale_color_brewer(palette = "Set1", direction = -1)+
+  labs( title = "Lakes with Zebra Mussels", ,x= "Longitude", y ="Latitude")+
+  theme_classic()
+ALL_Lakes_ZM
+
+```
+
+Some Plots
+```{r}
+CPUE_NUM <- CPUE %>%
+  mutate(AREA_HECTARES = as.numeric(AREA_HECTARES))%>%
+  mutate(ANNUAL_MED_SECCHI_M = as.numeric(ANNUAL_MED_SECCHI_M))%>%
+  mutate(MAX_DEPTH_M = as.numeric(MAX_DEPTH_M))
+
+Lake_Area <- ggplot(data = CPUE_NUM, aes(x = AREA_HECTARES)) +
+  geom_histogram(bins = 25, fill = "blue", color = "black")+
+  facet_wrap(vars(ZM))+
+  labs(x = " log Lake Area (acres)", title = "Lake Area")+ 
+  theme_bw()+
+  scale_x_log10()
+Lake_Area
+
+Secchi <- ggplot(data = CPUE_NUM, aes(x = ANNUAL_MED_SECCHI_M)) +
+  geom_histogram(bins = 25, fill = "darkolivegreen3", color = "black")+
+  facet_wrap(vars(ZM))+
+  labs(x = "Median Secchi", title = "Secchi")+ 
+  theme_bw()
+ggsave("Secchi_EF.png", plot = Secchi, dpi = 500)
+
+
+Max_Depth <- ggplot(data = CPUE_NUM, aes(x = MAX_DEPTH_M)) +
+  geom_histogram(bins = 25, fill = "purple3", color = "black")+
+  facet_wrap(vars(ZM))+
+  labs(x = "Max Depth (feet)", title = "Maximum Depth")+ 
+  theme_bw()
+
+Area <- ZM_Lake %>% 
+  filter(LAKE_AREA_MN_ACRES < 1000)
+lakes_smaller_than_16000_acres <- ggplot(data = Area, aes(x = LAKE_AREA_MN_ACRES))+
+  geom_histogram(bins = 50, fill = "blue", color = "white") +
+  labs(x = "Lake Area (acres)", title = "Lake Areas less than 1000 Acres")+
+  theme_bw()
+lakes_smaller_than_16000_acres
+
+Clarity_over_time <- ggplot(data = CPUE_NUM, aes)
+
+
+
+
+
+EffortvsCatch <- ggplot(data = CPUE, aes(x = EFFORT, y = TOTAL_CATCH))+
+  geom_point( alpha = 0.3)+
+  labs(title = "Effort vs. Catch", x = "Effort (hours)", y = "Catch") +
+  theme(axis.text.x = element_text(angle=90))+
+  theme_bw()
+EffortvsCatch
+
+CPUE_Netters <- CPUE %>%
+  filter(NUMBER_OF_NETTERS == 1| NUMBER_OF_NETTERS == 1.5| NUMBER_OF_NETTERS == 2)
+
+Num_Netters <- ggplot(data = CPUE_Netters, aes(x = EFFORT, y = TOTAL_CATCH, color = NUMBER_OF_NETTERS))+
+  geom_point( alpha = 0.3)+
+  labs(title = "Effort vs. Catch", x = "Effort (hours)", y = "Catch") +
+  theme(axis.text.x = element_text(angle=90))+
+  scale_color_gradient2(low = "green", mid = "darkblue", high = "red", midpoint = 1.5)+
+  theme_bw()
+Num_Netters
+```
+Comparing Invaded to Uninvaded Lakes
+```{r}
+Secchi_plot <- ggplot(data = CPUE_NUM, aes(x = ANNUAL_MED_SECCHI_M)) +
+  geom_histogram(bins = 25, fill = "darkolivegreen3", color = "black")+
+  facet_grid(. ~ INVASION_STATUS)+
+  facet_wrap(vars(ZM))+
+  labs(x = "Median Secchi", title = "Secchi")+ 
+  theme_bw()
+Secchi_plot
+
+GDD_plot <- ggplot(data = CPUE_NUM, aes(x = MEDIAN_93_19_GDD)) +
+  geom_histogram(bins = 25, fill = "hotpink3", color = "black")+
+  facet_grid(. ~ INVASION_STATUS)+
+  facet_wrap(vars(ZM))+
+  labs(x = "Median Secchi", title = "Lake Level Median GDD 1993-2019")+ 
+  theme_bw()
+GDD_plot
+```
+
+
+```{r}
+library(lme4)
+lm1=glmer(TOTAL_CATCH~area.z+depth.z+INVASION_STATUS_BINARY+EFFORT+secchi.z+gdd_wtr_5c+stocked+(1|DOW_KITTLE), family=poisson, data=CPUE)
+summary(lm1)
+
+############################################################################################################
+sjPlot::plot_model(lm1)
+windows()
+sjPlot:: tab_model(lm1)
+
+survey.data$predicted.catch=predict(lm1, type="response")
+
+
+windows()
+ggplot(survey.data, aes(TOTAL_CATCH, predicted.catch))+geom_point()+geom_smooth(method="lm", se=F, colour="red")+
+  geom_abline(intercept=0, slope=1, lty=2)
+```
+
+
+```{r, warning = FALSE}
+#__________________________________________________________________________________________________________________________________
+## Get 2010 on Stocking Data with Sentinel Lakes Package in R
+- This package pulls stocking data from lake finder
+# https://rdrr.io/github/mnsentinellakes/mnsentinellakes/
+library(remotes)
+# paste this into your console: 'remotes::install_github("mnsentinellakes/mnsentinellakes")'
+library(mnsentinellakes)
+# function: "fishstockdownload(lakeid)"
+test_1 <- fishstockdownload("11041300")
+test_1
+
+  buildurl=paste0("https://www.dnr.state.mn.us/lakefind/showstocking.html?downum=11041300&context=desktop")
+
+  #Download the data from lakefinder
+
+  downloaddata=rvest::html_table(rvest::html_nodes(xml2::read_html(buildurl),'table'))
+  
+   if (length(downloaddata)>0){
+    downloaddata=downloaddata[[1]]
+
+    #Fill in blank years using the year of the row above
+    downloaddata=tidyr::fill(downloaddata,downloaddata$Year)
+
+    downloaddata$Number=as.numeric(gsub(",","",downloaddata$Number))
+    downloaddata=data.frame("Lake"=mnsentinellakes::lakeid2name(lakeid),"LakeId"=lakeid,"Year"=downloaddata$Year,"Species"=downloaddata$Species,"Size"=downloaddata$Size,
+                            "Number"=downloaddata$Number,"Pounds"=downloaddata$Pounds)
+  }else{
+    downloaddata=NULL
+    warning("No stocking data available")
+  }
+  return(downloaddata)
+
+}
+```
+# ZM invaded lakes with nhdIDs for Gretchen
+```{r}
+Crosswalk <- read_csv('Crosswalks/mndow_nhdhr_xwalk.csv')
+
+Crosswalk_useable <- Crosswalk %>%
+  mutate(MN_DOW = str_replace(MNDOW_ID, "mndow_", ""))%>%
+  mutate(NHD_ID = str_replace(site_id, "nhdhr_", ""))
+#write.csv(Crosswalk_useable, "Crosswalk_Usable.csv", row.names = FALSE)
+
+ZM_NHD <- IW_fixed %>% 
+  filter(AIS_Species == "zebra mussel")%>%
+  left_join(Crosswalk_useable, by = c("DOW" = "MN_DOW"))%>%
+  select(2,5,7,8,9)%>%
+  mutate(NHD_ID = str_replace(site_id, "nhdhr_", ""))
+
+write.csv(ZM_NHD, "ZM_MN_NHD.csv", row.names= FALSE)
+```
+
+
+
+

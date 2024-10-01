@@ -1,0 +1,311 @@
+---
+title: "EF_WAE_ZM_Model1"
+author: "Holly Kundel"
+date: "11/15/2021"
+output: html_document
+---
+
+This model is run using `ZM_LAKE` as zebra mussel invasion variable
+- Only considered invaded if at least one EF survey was done the year of invasion or later
+- No invasions after 2019 count (because no data post 2019)
+- "0" indicates a lake is uninvaded (based on above criteria)
+- "1" indicates a lake is invaded (based on above criteria)
+
+Load in Required Packages
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(stringr)
+library(arm)
+library(doBy)
+library(sf)
+library(spData)
+library(RANN)
+library(ggplot2)
+library(MASS)
+```
+
+Load in Data
+```{r, message=FALSE}
+EF_WAE_ZM_data <- read_csv("EF_DATA_11.22.21.csv")
+
+```
+# Nearest Neighbor Code
+
+- Assigning uninvaded lakes a "pseudo-invasion year" for BACI set up
+
+Data setup
+```{r}
+# Format dates
+dat <- EF_WAE_ZM_data %>% 
+  mutate(SAMPLING_START_DATE = mdy(SAMPLING_START_DATE),
+         day = day(SAMPLING_START_DATE),
+         month = month(SAMPLING_START_DATE),
+         year = year(SAMPLING_START_DATE),
+  )
+```
+
+Create Spatial sf Object
+```{r}
+# Create spatial sf object (4326 = WGS84)
+dat.geo <- st_as_sf(dat, coords = c("LAKE_CENTER_LONG_DD5", "LAKE_CENTER_LAT_DD5"), crs = 4326)
+```
+
+Separate Invaded Lakes and Uninvaded Lakes
+
+- Using column `ZM_LAKE` for this
+- Only considered invaded if at least one EF survey was done the year of invasion or later
+- No invasions after 2019 count (because no data post 2019)
+- "0" indicates a lake is uninvaded (based on above criteria)
+- "1" indicates a lake is invaded (based on above criteria)
+
+```{r}
+dat.geo.uninvaded <- dat.geo %>% 
+  filter(ZM_LAKE == 0)
+dim(dat.geo.uninvaded) #1116 surveys
+
+dat.geo.invaded <- dat.geo %>% 
+  filter(ZM_LAKE == 1)
+dim(dat.geo.invaded) #322 surveys, adds up to correct total of 1438 surveys total
+```
+Get coordinate matrices
+```{r}
+uninvaded_coords <- do.call(rbind, st_geometry(dat.geo.uninvaded))
+invaded_coords <- do.call(rbind, st_geometry(dat.geo.invaded))
+invaded_coords <- cbind(invaded_coords, 1:nrow(invaded_coords)) # Index for identifying nearest lake
+
+```
+
+Find nearest neighbor
+```{r}
+closest <- nn2(invaded_coords[,1:2], uninvaded_coords,  k = 1, searchtype = "standard")
+str(closest)
+head(closest)
+closest <- sapply(closest, cbind) 
+```
+
+Combine uninvaded data with nearest neighbor assignments
+```{r}
+dat.geo.uninvaded <- cbind(dat.geo.uninvaded, closest)
+str(dat.geo.uninvaded)
+dim(dat.geo.uninvaded) 
+```
+Give invaded lakes an identifier and select columns
+```{r}
+dat.geo.invaded$nn.idx <- 1:nrow(dat.geo.invaded)
+dat.geo.invaded <- dat.geo.invaded %>% 
+  dplyr::select(YEAR_INFESTED, nn.idx)
+str(dat.geo.invaded)
+head(dat.geo.invaded)
+
+str(dat.geo.uninvaded)
+str(dat.geo.invaded)
+```
+Merge uninvaded with invaded `YEAR_INFESTED` for use as "after" year in BACI (Before After Control Impact)
+```{r}
+dat.geo.invaded_merge <- st_set_geometry(dat.geo.invaded, NULL)
+
+dat.geo.uninvaded.final <- dat.geo.uninvaded %>%
+    left_join(dat.geo.invaded_merge, by = c("nn.idx"))
+str(dat.geo.uninvaded.final)
+summary(dat.geo.uninvaded.final)
+# Bring back into full dataset
+# Convert to dataframe
+dat.geo.uninvaded.final.df <- st_set_geometry(dat.geo.uninvaded.final, NULL)
+class(dat.geo.uninvaded.final.df)
+str(dat.geo.uninvaded.final.df)
+
+# Join dat.geo.uninvaded.final.df - want YEAR_INFESTED.y - with original data, dat
+# Grab columns of interest
+dat.geo.uninvaded.final.df <- dat.geo.uninvaded.final.df %>% 
+  dplyr::select(SURVEY_ID, YEAR_INFESTED.y)
+dim(dat.geo.uninvaded.final.df)
+head(dat.geo.uninvaded.final.df)
+dim(dat)
+
+# Final merge
+final.dat3 <- dat %>%
+    left_join(dat.geo.uninvaded.final.df, by = c("SURVEY_ID"))
+dim(final.dat3)
+head(final.dat3)
+```
+
+Export data with nearest neighbor
+```{r}
+write.csv(final.dat3, "NN_EF_WAE_ZM_Model_3_11.15.21.csv")
+```
+
+Test Nearest Neighbor Data
+```{r}
+# test
+test1 <- final.dat %>%
+   filter(ZM_LAKE == 0)
+ head(test1)
+
+# Export final data
+
+# Check nearest neighbors
+# Grab state boundaries from spData
+us_states2 <- st_transform(us_states, crs = 4326)
+# Rename column
+colnames(us_states2)[2] <- "State"
+selectStates <- c("Minnesota")
+# Subset data for plotting
+us_state_select <- us_states2[us_states2$State %in% selectStates, ]
+
+# Subset for visualization
+unique(dat.geo.uninvaded$nn.idx)
+invaded.plot <- dat.geo.invaded %>% 
+  filter(nn.idx == 307 | nn.idx == 309 |nn.idx == 45)
+
+uninvaded.plot <- dat.geo.uninvaded %>% 
+  filter(nn.idx == 307 | nn.idx == 309 |nn.idx == 45)
+
+ggplot() + geom_sf(data = us_state_select, color = "gray30", lwd=1, fill="white") +
+  geom_sf(data = invaded.plot, size=3.0, aes(color=as.factor(nn.idx))) +
+  geom_point() +
+  geom_sf(data = uninvaded.plot,size=0.3, aes(color=as.factor(nn.idx))) +
+  geom_sf(data = dat.geo.invaded,size=0.3, color='black') +
+  labs(title="", y="Latitude", x="Longitude", color = "Lakes") 
+ggsave("NN_ZM_map.png", height=5, width=5, units="in")
+```
+
+# Prepare to run model
+
+Load more libraries
+```{r}
+# if you need to install stan run: "install.packages("rstan", repos = "https://cloud.r-project.org/", dependencies = TRUE)"
+library(StanHeaders)
+library(rstan)
+library(bayesplot)
+library(lme4)
+library(ggmcmc) # Use ggmcmc package for assessing convergence
+library(gridExtra)
+library(ggthemes)
+library(coda)
+library(forcats)
+```
+
+Load in Data Again 
+- could also use `final.dat` from above
+```{r}
+dat <- read.csv('NN_EF_WAE_ZM_Model1_11.15.21.csv')
+dim(dat)
+head(dat)
+
+# Ensure that dates are appropriately formatted
+dat <- dat %>% 
+  mutate(SAMPLING_START_DATE = ymd(SAMPLING_START_DATE),
+         day = day(SAMPLING_START_DATE),
+         month = month(SAMPLING_START_DATE),
+         year = year(SAMPLING_START_DATE))
+```
+
+Create BACI design variables
+```{r}
+# "Treatment" is lake-level invasion status, ZM (1 = ZM; 0 otherwise)
+# Before/After time variable ("post" = 1 if sampled after invasion; 0 if before)
+# Below, "year" is year of sampling and time is year infested
+dat <- dat %>% 
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0),
+         treatment = ZM_LAKE # USING ZM_LAKE_HERE
+         )%>%
+  mutate(INVASION_STATUS_NEW = case_when(ZM_LAKE == 0 ~ "Uninvaded",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))
+
+head(dat)
+summary(dat)
+
+#check data
+dat %>%
+  group_by(INVASION_STATUS_NEW) %>%  
+  count(post, ZM_LAKE) %>%
+  mutate(prop = prop.table(n))
+```
+
+Prep for model
+```{r}
+# Create lake ID
+dat$lake.id <- as.numeric(as.factor(as.numeric(as.factor(dat$DOW_KITTLE))))
+# Create year ID
+dat$year.id <- as.numeric(as.factor(as.numeric(as.factor(dat$year))))
+nyear <- length(unique(dat$year.id))
+
+# Sort data by site
+dat <- dat %>% 
+  arrange(lake.id)
+
+# Effort offset term (maybe multiply eff_seconds by the number_of_netters?)
+dat <- dat %>% 
+  mutate(EFF_HRS = EF_SECONDS/3600,
+         offset = log(EFF_HRS * NUMBER_OF_NETTERS))
+```
+
+Lake-level predictors
+```{r}
+# Prepare lake-level predictors
+lake_area <- summaryBy(AREA_HECTARES ~ lake.id, data=dat, FUN=mean)
+gdd <- summaryBy(MEDIAN_93_19_GDD ~ lake.id, data=dat, FUN=mean)
+secchi <- summaryBy(ANNUAL_MED_SECCHI_M ~ lake.id, data=dat, FUN=mean)
+
+# Transform as needed and scale
+lake_area2 <- as.numeric(scale(log(lake_area$AREA_HECTARES.mean)))
+gdd2 <- as.numeric(scale(gdd$MEDIAN_93_19_GDD.mean))
+secchi2 <- as.numeric(scale(secchi$ANNUAL_MED_SECCHI_M.mean))
+```
+
+Observation-level predictors
+```{r}
+# Observation-level predictors, transform as needed and scale
+annual_gdd <- as.numeric(scale(dat$ANNUAL_GDD_5C)) # GDD up to day of sampling
+annual_secchi <- as.numeric(scale(dat$ANNUAL_MED_SECCHI_M))
+post <- dat$post
+x.treatment <- dat$treatment
+stocked <- dat$STOCKED
+```
+
+Quick test with glmer
+```{r}
+m0 <-glmer(TOTAL_CATCH ~ 1 + (1 | lake.id), data = dat, family = poisson(link = "log"), nAGQ = 100)
+summary(m0)
+# # 
+m1 <- glmer(TOTAL_CATCH ~ post + treatment + post*treatment + STOCKED + (1|lake.id), nAGQ = 100,
+             data=dat, family = poisson(link="log"))
+summary(m1)
+```
+Check that data is in correct form
+```{r}
+n_post <- max(post)
+n_trt <- max(x.treatment)
+n_stocked <- max(stocked)
+n_lake <- max(dat$lake.id)
+n_year <- max(dat$year.id)
+```
+
+Load data; x = x; (dim(x)[2] + dim(x_obs)[2] + 1)
+```{r}
+data <- list(y = dat$TOTAL_CATCH, lake = dat$lake.id, N = dim(dat)[1], 
+             n_lake = n_lake, offset=dat$offset, 
+             year = dat$year.id, n_year = n_year, n_post = n_post, n_trt = n_trt, n_stocked = n_stocked,
+             post = post, trt = x.treatment, stocked = stocked, survey_gdd = annual_gdd, survey_secchi = annual_secchi,
+             lake_area = lake_area2, gdd = gdd2, secchi = secchi2)
+```
+
+
+```{r}
+out <- stan(file='pois_model_zip3.stan', data=data,
+            iter=50000, warmup=25000, chains=3, thin=1, cores=3, refresh = 1)
+print(out)
+
+
+# Save all the stan output
+saveRDS(out, file="model_out_zip3.rds")
+out <- readRDS(file='model_out_zip3.rds')
+```
+
+
+
