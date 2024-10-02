@@ -1,0 +1,926 @@
+---
+title: "Figures"
+author: "Holly Kundel"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+Load in required packages
+
+```{r, message = FALSE, warning = FALSE}
+library(rstan)
+library(bayesplot)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(forcats)
+library(ggmcmc)
+library(ggthemes)
+library(readr)
+library(readxl)
+library(RColorBrewer)
+library(tibble)
+library(tidybayes)
+library(viridis)
+library(ggspatial)
+library(maps)
+library(cowplot)
+# library(ggsn)
+library(grid)
+library(data.table)
+```
+
+# Data
+
+
+```{r, message=FALSE}
+EF_Final <- read_csv("R and stan code/Data/EF_DATA_MRVrerun.csv")
+
+out <- readRDS(file='model_out_zip_MRVrerun.rds')
+
+# Convert mcmc draws to matrix
+posterior <- as.matrix(out)
+
+
+
+
+posterior_df <- as.data.table(posterior)[ ,
+                                          c(1:13),] #take only the first 13 columns
+
+```
+
+
+
+
+# Figure 1
+
+Map showing locations of lakes and whether or not they have zebra mussels as of 2019
+
+```{r Figure 1, warning = FALSE, message = FALSE}
+MN <- map_data("state")%>% filter(region=="minnesota")
+MN_Counties <- map_data("county")%>%
+  filter(region == "minnesota")
+
+# walleye lakes, ZM in red, rest in blue
+EF_Lakes_ZM <- ggplot(data = MN_Counties, mapping = aes(x = long, y = lat, group=group))+
+  coord_fixed(1.3) +
+  geom_polygon(color= "gray85", fill = "gray90")+
+  geom_point(data=EF_Final, aes(x= LAKE_CENTER_LONG_DD5, y = LAKE_CENTER_LAT_DD5, group=25, color=as.factor(ZM_LAKE),
+                                      shape = as.factor(ZM_LAKE)),alpha = 0.3, size =3) +
+  scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c("#0571b0", "#ca0020"))+
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c(16, 15))+
+  labs(color = "ZM Invasion Status",x= "Longitude", y ="Latitude")+
+  theme_void()+
+  theme(legend.position = "bottom",
+        legend.box.background = element_rect(color = "gray85"),
+        legend.box.margin = margin(t = 2, r = 4, b = 2, l = 4),
+        legend.key = element_rect(color = "gray90"))+
+  coord_sf(crs = 26991) #EPSG MN North https://epsg.io/26991
+
+EF_Lakes_ZM
+```
+
+Bounding box and North America Map for inset
+```{r country}
+canadamap <- map_data("world", c("Canada")) 
+
+mexicomap <- map_data("world", c("Mexico"))
+
+all_states <- map_data("state")
+
+lakes <- map_data("lakes") #pulls in great lakes and large lakes
+
+states <- subset(all_states, region %in% c("minnesota"))
+
+xlim <- range(states$long) + c(-.3, 0.1) 
+ylim <- range(states$lat) + c(-0.7, .65)
+# the +/- 0.3 creates an offset so the bounding box is not counting off MN
+
+N_AM_map <- ggplot() +  
+  geom_map(data = canadamap, aes(map_id = region, group = subregion),  
+           map = canadamap, color = "black", fill = "grey90") +
+  # creates a map of Canada
+  geom_map(data = mexicomap, aes(map_id = region, group = subregion),  
+           map = mexicomap, color = "black", fill = "grey90")+
+  #creates a map of Mexico
+  geom_map(data = all_states, aes(map_id = region), 
+           map = all_states, color = "black", fill = "grey90") +
+  # Creates a map of US states with the existing Canada map
+  geom_map(data = lakes,aes(map_id = region, group = subregion),
+           map = lakes, color = "black", fill = "lightskyblue2")+
+  #makes the lines around the great lakes cleaner, and can fill them with blue
+  geom_rect(aes(xmin = xlim[1], xmax = xlim[2], ymin = ylim[1], ymax = ylim[2]), 
+            colour = "red", fill = NA, lwd = 1) + 
+  # creates a red rectangle around the y- and x-lim
+  coord_map(xlim = c(-125, -66), ylim = c(25, 50)) +
+  # defines the cutoff/edges of the map
+  labs(x = NULL, y = NULL) + theme_bw() + theme(panel.grid = element_blank())+
+  theme(panel.background = element_rect(fill = "lightskyblue2", color = "black"),
+        axis.text.x = element_blank(), #remove x axis labels
+        axis.ticks.x=element_blank(), #remove x axis ticks
+        axis.text.y=element_blank(),  #remove y axis labels
+        axis.ticks.y=element_blank()) #remove y axis ticks
+N_AM_map
+```
+Inset maps
+```{r inset}
+Final_Inset_Map <- ggdraw()+
+  draw_plot(EF_Lakes_ZM +
+              # ggsn::scalebar(data = MN_Counties, dist = 50, dist_unit = "km", st.size = 2, 
+              #           transform = TRUE, model = 'WGS84', height = 0.01, location = "bottomright",
+              #           box.color = c("black", "grey"))+
+              annotation_north_arrow(location = "br", 
+                         which_north = "grid",
+                         pad_x = unit(0.7, "in"),
+                         pad_y = unit(0.7, "in"),
+                         style = north_arrow_orienteering,
+                         width = unit(.7, "cm"),
+                         height = unit(.7, "cm")))+ #adds scale bar
+  draw_plot(N_AM_map, x = 0.6, y = 0.3, width = .4, height = .2)
+
+Final_Inset_Map
+
+```
+# Figure 2
+
+BACI Figure
+
+Data
+```{r}
+NoZM_Pre <- exp(posterior[,"b_0"]) 
+mean(NoZM_Pre)
+quantile(NoZM_Pre, c(0.025, 0.975))
+# Control Post
+NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"]) 
+mean(NoZM_Post)
+quantile(NoZM_Post, c(0.025, 0.975))
+# ZM Treatment Pre
+ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"]) 
+mean(ZM_Pre)
+quantile(ZM_Pre, c(0.025, 0.975))
+# ZM Treatment Post
+ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  posterior[,"b_trt"] +  posterior[,"b_post_trt"]) 
+mean(ZM_Post)
+quantile(ZM_Post, c(0.025, 0.975))
+
+BACI_Estimates1 <- tibble(
+  Category = c("No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"),
+  Mean = c(mean(NoZM_Pre), mean(NoZM_Post), mean(ZM_Pre), mean(ZM_Post)),
+  Quant_2.5 = c(quantile(NoZM_Pre, 0.025), quantile(NoZM_Post, 0.025), quantile(ZM_Pre, 0.025), quantile(ZM_Post, 0.025)),
+  Quant_97.5 = c(quantile(NoZM_Pre, 0.975), quantile(NoZM_Post, 0.975), quantile(ZM_Pre, 0.975), quantile(ZM_Post, 0.975)),
+  ZM = c("Uninvaded", "Uninvaded", "ZM", "ZM"),
+  Quant_83 = c(quantile(NoZM_Pre, 0.83), quantile(NoZM_Post, 0.83), quantile(ZM_Pre, 0.83), quantile(ZM_Post, 0.83)),
+  Quant_17 = c(quantile(NoZM_Pre, 0.17), quantile(NoZM_Post, 0.17), quantile(ZM_Pre, 0.17), quantile(ZM_Post, 0.17)))
+
+BACI_PLOT_DAT <- BACI_Estimates1 %>%
+  mutate(Levels = fct_relevel(Category, "No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"))
+```
+
+```{r, warning = FALSE}
+brewer.pal(n = 2, "Set1") #E41A1C = red, #377EB8 = blue
+
+BACI_Figure <-ggplot(BACI_PLOT_DAT , aes(x = Levels, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5))+
+  geom_pointrange(aes(color = ZM),size = 1.5)+
+  geom_linerange(aes(x = Levels, ymin = Quant_17, ymax = Quant_83, color = ZM), size = 4)+
+  geom_segment(aes(x = "No_ZM_Pre", y = 4.189089, xend = "No_ZM_Post", yend = 4.464494), color = "#377EB8", linetype = "dashed")+
+  geom_segment(aes(x = "ZM_Pre", y = 9.186239, xend = "ZM_Post", yend = 5.449405), color ="#E41A1C", linetype = "dashed")+
+  scale_color_brewer(palette = "Set1", direction = -1)+
+  labs(y = "Mean Predicted Walleye Catch per Unit Effort")+
+  theme_bw()+
+  theme(legend.position = "none")+
+  scale_x_discrete(limit = c("ZM_Pre", "ZM_Post", "No_ZM_Pre", "No_ZM_Post"),
+                     labels = c("Pre ZM", "Post ZM", "Uninvaded Pre", "Uninvaded Post"))+
+  theme(axis.text.x = element_text(family = "Arial", color = "black", size = 14),
+        axis.title.x = element_blank())#,
+        
+BACI_Figure
+```
+
+
+# Figure 3
+Posterior Distributions
+
+```{r}
+color_scheme_set(scheme = "blue")
+post_dist_blue2 <- mcmc_areas(
+    posterior,
+    pars = c("b_trt", "b_post","b_0","b_stocked","b_post_trt","b_lake_area","b_gdd","b_secchi","b_survey_gdd","b_survey_secchi"),
+    prob = 0.95, # 95% intervals
+    prob_outer = 0.99, # 99%
+    point_est = "median",
+    area_method = "scaled height"
+  ) + 
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") + 
+  scale_y_discrete(limit = c("b_0", "b_trt", "b_post", "b_post_trt", "b_stocked", "b_gdd","b_survey_gdd","b_secchi", "b_survey_secchi","b_lake_area"),
+                       labels = c("Intercept", "Zebra Mussels", "Post Invasion", "ZM * Post", "Stocked", "Lake Level Average GDD", "GDD time of Survey", "Lake Level Average Secchi", "Secchi time of survey", "Lake Area"))+
+  theme(axis.text.x = element_text(color = "black"),
+        axis.text.y = element_text(color = "black", size = 14, family = "sans") )+
+  theme_classic()
+
+post_dist_blue2
+```
+
+
+# Figure 4
+
+Stocking Figure
+
+```{r, warning = FALSE}
+# get stocking estimates
+
+not_stocked <- exp(posterior[,"b_0"]) 
+
+stocked <- exp(posterior[,"b_0"] + posterior[,"b_stocked"]) 
+
+
+stocking_estimates <- tibble(
+  Stocking_Status = c("Not Stocked", "Stocked"),
+  Mean = c(mean(not_stocked), mean(stocked)),
+  Quant_2.5 = c(quantile(not_stocked, 0.025), quantile(stocked, 0.025)),
+  Quant_97.5 = c(quantile(not_stocked, 0.975), quantile(stocked, 0.975)),
+  Quant_83 = c(quantile(not_stocked, 0.83), quantile(stocked, 0.83)),
+  Quant_17 = c(quantile(not_stocked, 0.17), quantile(stocked, 0.17)))
+
+
+stocking_estimates_DAT <- stocking_estimates %>%
+  mutate(Levels = fct_relevel(Stocking_Status, "Not Stocked", "Stocked"))
+
+
+#get hex codes for colors
+brewer.pal(n = 4, "Set1") #E41A1C = red, #377EB8 = blue, #4DAF4A = green, #984EA3 = purple
+
+Stocking_Figure <-ggplot(stocking_estimates_DAT , aes(x = Stocking_Status, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5))+
+  geom_segment(aes(x = "Not Stocked", y = 4.189089, xend = "Stocked", yend = 11.138306), color = "grey85", linetype = "dashed")+
+  geom_pointrange(aes(color = Stocking_Status),size = 1.5)+
+  geom_linerange(aes(x = Levels, ymin = Quant_17, ymax = Quant_83, color = Stocking_Status), size = 4)+
+  scale_discrete_manual(aesthetics = c("color", "fill"), values = c("#4DAF4A", "#984EA3"))+
+  labs(y = "Mean Predicted Walleye Catch per Unit Effort")+
+  theme_bw()+
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(family = "Arial", color = "black", size = 14),
+        axis.title.x = element_blank())#,
+        
+Stocking_Figure
+```
+
+
+# Figure 5
+
+Environmental effects
+
+Model Data
+```{r}
+dat <- read.csv('R and stan code/Data/NN_EF_WAE_ZM_Model_MRVrerun.csv')
+dim(dat)
+head(dat)
+
+# Ensure that dates are appropriately formatted
+dat <- dat %>% 
+  mutate(SAMPLING_START_DATE = ymd(SAMPLING_START_DATE),
+         day = day(SAMPLING_START_DATE),
+         month = month(SAMPLING_START_DATE),
+         year = year(SAMPLING_START_DATE))
+
+dat <- dat %>% 
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0),
+         treatment = ZM_LAKE # USING ZM_LAKE_HERE
+         )%>%
+  mutate(INVASION_STATUS_NEW = case_when(ZM_LAKE == 0 ~ "Uninvaded",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))
+
+head(dat)
+summary(dat)
+
+# Create lake ID
+dat$lake.id <- as.numeric(as.factor(as.numeric(as.factor(dat$DOW_KITTLE))))
+# Create year ID
+dat$year.id <- as.numeric(as.factor(as.numeric(as.factor(dat$year))))
+nyear <- length(unique(dat$year.id))
+
+# Sort data by site
+dat <- dat %>% 
+  arrange(lake.id)
+
+# Effort offset term (maybe multiply eff_seconds by the number_of_netters?)
+dat <- dat %>% 
+  mutate(EFF_HRS = EF_SECONDS/3600,
+         offset = log(EFF_HRS * NUMBER_OF_NETTERS))
+```
+
+Lake-level predictors
+```{r}
+# Prepare lake-level predictors
+lake_area <- summaryBy(AREA_HECTARES ~ lake.id, data=dat, FUN=mean)
+gdd <- summaryBy(MEDIAN_93_19_GDD ~ lake.id, data=dat, FUN=mean)
+secchi <- summaryBy(ANNUAL_MED_SECCHI_M ~ lake.id, data=dat, FUN=mean)
+
+# Transform as needed and scale
+lake_area2 <- as.numeric(scale(log(lake_area$AREA_HECTARES.mean)))
+gdd2 <- as.numeric(scale(gdd$MEDIAN_93_19_GDD.mean))
+secchi2 <- as.numeric(scale(secchi$ANNUAL_MED_SECCHI_M.mean))
+
+LL_average_secchi <- EF_Final %>%
+  group_by(DOW_KITTLE)%>%
+  summarise(Mean_Secchi = mean(ANNUAL_MED_SECCHI_M))
+
+EF_Final_ave_secchi <- EF_Final %>%
+  left_join(LL_average_secchi, by = "DOW_KITTLE")
+
+```
+
+Observation-level predictors
+```{r}
+# Observation-level predictors, transform as needed and scale
+annual_gdd <- as.numeric(scale(dat$ANNUAL_GDD_5C)) # GDD up to day of sampling
+annual_secchi <- as.numeric(scale(dat$ANNUAL_MED_SECCHI_M))
+post <- dat$post
+x.treatment <- dat$treatment
+stocked <- dat$STOCKED
+```
+
+
+Annual median secchi (m) (Survey Level)
+```{r}
+# Number of desired MCMC samples used for prediction (use a subset of all samples)
+
+nsim <- 2500
+
+# Chain length from analysis
+
+chainLength <- length(posterior_df$b_0)
+
+# Select thinned steps in chain for posterior predictions to ensure we take values from length of posterior
+
+ID = seq( 1 , chainLength , floor(chainLength/nsim) )
+
+# length(ID)
+
+# extract the survey level secchi info (slopes)
+b_secchi <- posterior_df$b_survey_secchi[ID]
+
+# extract the intercept
+b_0 <- posterior_df$b_0[ID]
+
+# range was determined by range of actual data
+secchi_range <- seq(0, 7.4, by=.1) #75 numbers
+
+pred_secchi <- array(NA, c(length(ID), 75))
+
+for (i in 1:length(ID)){ #number of iterations
+  for(j in 1:length(secchi_range))
+     pred_secchi[i,j] <- exp(b_0[i] + (b_secchi[i]*secchi_range[j]))
+    }
+
+str(pred_secchi)
+
+secchi_means <- apply(pred_secchi, 2, FUN = mean)
+secchi_CI <- apply(pred_secchi, 2, quantile, c(0.025, 0.975))
+
+secchi_df <- as.data.frame(rbind(secchi_means, secchi_CI))
+
+secchi_df_long <- t(secchi_df)
+
+secchi_plotting <- as.data.frame(secchi_df_long)%>%
+  mutate(Secchi_meters = seq(0, 7.4, by=.1))%>%
+  rename(lower_CI = 2, upper_CI = 3)
+
+
+Secchi_Plot <- ggplot(secchi_plotting, aes(x = Secchi_meters))+
+  geom_line(data = secchi_plotting, aes(x=Secchi_meters, y = secchi_means),size = 2)+
+  geom_ribbon(aes(ymin = lower_CI, ymax = upper_CI), alpha= .2)+
+  labs(x = "Secchi (meters)", y = "Predicted CPUE")+
+  theme_classic()+
+  ylim(0,16.5)
+
+Secchi_Plot #annual median, survey level
+
+```
+
+
+GDD annual 5C from year of survey
+```{r}
+# Begin predict code
+# Number of desired MCMC samples used for prediction (use a subset of all samples)
+nsim <- 2500
+# Chain length from analysis
+chainLength <- length(posterior_df$b_0)
+# Select thinned steps in chain for posterior predictions to ensure we take values from length of posterior
+ID = seq( 1 , chainLength , floor(chainLength/nsim) )
+# length(ID)
+
+b_gdd <- posterior_df$b_survey_gdd[ID]
+b_0 <- posterior_df$b_0[ID]
+
+gdd_range <- seq(1890, 3300, by= 10) #142 numbers
+
+gdd_range_standardized <- wiqid::standardize2match(gdd_range, dat$ANNUAL_GDD_5C)
+
+pred_gdd <- array(NA, c(length(ID), 142))
+
+for (i in 1:length(ID)){ #number of iterations
+  for(j in 1:length(gdd_range_standardized))
+     pred_gdd[i,j] <- exp(b_0[i] + (b_gdd[i]*gdd_range_standardized[j]))
+    }
+
+str(pred_gdd)
+
+gdd_means <- apply(pred_gdd, 2, FUN = mean)
+gdd_CI <- apply(pred_gdd, 2, quantile, c(0.025, 0.975))
+
+gdd_df <- as.data.frame(rbind(gdd_means, gdd_CI)) #this seems wrong
+
+gdd_df_long <- t(gdd_df)
+
+gdd_plotting <- as.data.frame(gdd_df_long)%>%
+  mutate(GDD_base5 = seq(1890, 3300, by= 10))%>%
+  rename(lower_CI = 2, upper_CI = 3)
+
+
+GDD_Plot <- ggplot(gdd_plotting, aes(x = GDD_base5))+
+  geom_line(aes(x=GDD_base5, y = gdd_means),size = 2)+
+  geom_ribbon(aes(ymin = lower_CI, ymax = upper_CI), alpha= .2)+
+  labs(x = "Growing Degree Days (base 5°C)", y = "Predicted CPUE")+
+  theme_classic()+
+  ylim(0,16.5)
+  
+
+GDD_Plot
+
+```
+
+
+Lake area
+```{r}
+# Begin predict code
+# Number of desired MCMC samples used for prediction (use a subset of all samples)
+nsim <- 2500
+# Chain length from analysis
+chainLength <- length(posterior_df$b_0)
+# Select thinned steps in chain for posterior predictions to ensure we take values from length of posterior
+ID = seq( 1 , chainLength , floor(chainLength/nsim) )
+# length(ID)
+
+b_area <- posterior_df$b_lake_area[ID]
+b_0 <- posterior_df$b_0[ID]
+
+lake_area_range <- seq(15, 93500, by=100) #935 numbers
+
+#lake area was logged before going into the model
+
+log_lake_area_range <- log(lake_area_range) 
+
+pred_area <- array(NA, c(length(ID), 935))
+
+for (i in 1:length(ID)){ #number of iterations
+  for(j in 1:length(log_lake_area_range))
+     pred_area[i,j] <- (b_0[i] + (b_area[i]*log_lake_area_range[j]))  #remove "exp" because it is lake level
+    }
+
+str(pred_area)
+
+area_means <- apply(pred_area, 2, FUN = mean)
+
+area_CI <- apply(pred_area, 2, quantile, c(0.025, 0.975))
+
+area_df <- as.data.frame(rbind(area_means, area_CI))
+
+area_df_long <- t(area_df)
+
+lake_area_plotting <- as.data.frame(area_df_long)%>%
+  mutate(lake_area_hectares = seq(15, 93500, by=100))%>%
+  mutate(log_lake_area_hectares = log(lake_area_hectares))%>%
+  rename(lower_CI = 2, upper_CI = 3)
+
+#making the plot
+area_Plot <- ggplot(lake_area_plotting, aes(x = log_lake_area_hectares))+
+  geom_line(aes(x=log_lake_area_hectares, y = area_means),size = 2)+
+  geom_ribbon(aes(ymin = lower_CI, ymax = upper_CI), alpha= .2)+
+  labs(x = "log Lake Area (hectares)", y = "Predicted CPUE")+
+  theme_classic()+
+  ylim(0,16.5)
+
+area_Plot
+```
+
+Average (lake level) Secchi
+```{r}
+# Number of desired MCMC samples used for prediction (use a subset of all samples)
+
+nsim <- 2500
+
+# Chain length from analysis
+
+chainLength <- length(posterior_df$b_0)
+
+# Select thinned steps in chain for posterior predictions to ensure we take values from length of posterior
+
+ID = seq( 1 , chainLength , floor(chainLength/nsim) )
+
+# length(ID)
+
+b_secchi_LL <- posterior_df$b_secchi[ID]
+b_0 <- posterior_df$b_0[ID]
+
+secchi_LL_range <- seq(0, 6.6, by=.1) #67 numbers
+
+pred_secchi_LL <- array(NA, c(length(ID), 67))
+
+for (i in 1:length(ID)){ #number of iterations
+  for(j in 1:length(secchi_LL_range))
+     pred_secchi_LL[i,j] <- exp(b_0[i] + (b_secchi_LL[i]*secchi_LL_range[j]))
+    }
+
+str(pred_secchi_LL)
+
+secchi_LL_means <- apply(pred_secchi_LL, 2, FUN = mean)
+secchi_LL_CI <- apply(pred_secchi_LL, 2, quantile, c(0.025, 0.975))
+
+secchi_LL_df <- as.data.frame(rbind(secchi_LL_means, secchi_LL_CI))
+
+secchi_LL_df_long <- t(secchi_LL_df)
+
+secchi_LL_plotting <- as.data.frame(secchi_LL_df_long)%>%
+  mutate(Secchi_meters = seq(0, 6.6, by=.1))%>%
+  rename(lower_CI = 2, upper_CI = 3)
+
+
+
+Secchi_LL_Plot <- ggplot(secchi_LL_plotting, aes(x = Secchi_meters))+
+  geom_line(data = secchi_LL_plotting, aes(x=Secchi_meters, y = secchi_LL_means),size = 2)+
+  geom_ribbon(aes(ymin = lower_CI, ymax = upper_CI), alpha= .2)+
+  labs(x = "Average Secchi (meters)", y = "Predicted CPUE")+
+  theme_classic()+
+  ylim(0,16.5)
+
+Secchi_LL_Plot #annual median, survey level
+```
+
+Median GDD (1993 - 2019), lake level
+```{r}
+# Begin predict code
+# Number of desired MCMC samples used for prediction (use a subset of all samples)
+nsim <- 2500
+# Chain length from analysis
+chainLength <- length(posterior_df$b_0)
+# Select thinned steps in chain for posterior predictions to ensure we take values from length of posterior
+ID = seq( 1 , chainLength , floor(chainLength/nsim) )
+# length(ID)
+
+b_gdd_LL <- posterior_df$b_gdd[ID]
+b_0 <- posterior_df$b_0[ID]
+
+gdd_LL_range <- seq(2100, 3050, by= 10) #96 numbers
+
+gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, dat$MEDIAN_93_19_GDD)
+
+pred_gdd_LL <- array(NA, c(length(ID), 96))
+
+for (i in 1:length(ID)){ #number of iterations
+  for(j in 1:length(gdd_LL_range_standardized))
+     pred_gdd_LL[i,j] <- exp(b_0[i] + (b_gdd_LL[i]*gdd_LL_range_standardized[j]))
+    }
+
+str(pred_gdd_LL)
+
+gdd_LL_means <- apply(pred_gdd_LL, 2, FUN = mean)
+gdd_LL_CI <- apply(pred_gdd_LL, 2, quantile, c(0.025, 0.975))
+
+gdd_LL_df <- as.data.frame(rbind(gdd_LL_means, gdd_LL_CI)) #this seems wrong
+
+gdd_LL_df_long <- t(gdd_LL_df)
+
+gdd_LL_plotting <- as.data.frame(gdd_LL_df_long)%>%
+  mutate(Median_GDD = seq(2100, 3050, by= 10))%>%
+  rename(lower_CI = 2, upper_CI = 3)
+
+
+GDD_LL_Plot <- ggplot(gdd_LL_plotting, aes(x = Median_GDD))+
+  geom_line(aes(x= Median_GDD, y = gdd_LL_means),size = 2)+
+  geom_ribbon(aes(ymin = lower_CI, ymax = upper_CI), alpha= .2)+
+  labs(x = "Median Growing Degree Days (1993 - 2019)", y = "Predicted CPUE")+
+  theme_classic()+
+  ylim(0,16.5)
+
+GDD_LL_Plot
+
+```
+
+
+
+# Combine into one figure
+```{r}
+Fig_5 <- plot_grid(Secchi_Plot, GDD_Plot, NULL, Secchi_LL_Plot, GDD_LL_Plot, area_Plot,
+          labels = c("A", "B", "", "C", "D", "E", 
+                     "     Lake Area"),
+          label_size = 14)
+
+```
+
+
+
+
+
+# Summaries referenced in the manuscript, Table 1, and figures
+
+
+Additional Data Summaries
+
+Calculate percent change in pre vs post - zm
+```{r}
+#calculate percent change in pre-post
+zm_diff = ZM_Pre - ZM_Post
+zm_diff_prop = zm_diff/ZM_Pre
+
+mean(zm_diff) #3.736835 walleye per hour
+mean(zm_diff_prop) #40.67%
+quantile(zm_diff_prop, c(0.025, 0.975))
+
+uninvaded_diff = NoZM_Pre - NoZM_Post
+mean(uninvaded_diff) #-0.2754049
+uninvaded_prop = uninvaded_diff/NoZM_Pre
+mean(uninvaded_prop)
+quantile(uninvaded_prop, c(0.025, 0.975)) #-0.06585174 or 6.59% increase post
+```
+
+Effect of Stocking, stocking led to higher catch rates
+```{r}
+# Not stocked
+Not_stocked <- exp(posterior[,"b_0"]) 
+mean(Not_stocked) # 4.189089
+quantile(Not_stocked, c(0.025, 0.975)) # 2.919797 5.754348
+
+#Stocked
+stocked <- exp(posterior[,"b_0"]+posterior[,"b_stocked"]) 
+mean(stocked) # 11.13831
+quantile(stocked, c(0.025, 0.975)) # 7.769137 15.284624 
+
+
+#stocking effect
+stocking_diff= stocked - Not_stocked
+mean(stocking_diff) # 6.949217
+quantile(stocking_diff, c(0.025, 0.975)) #4.841930 9.549285 
+
+# percent change with stocking
+stocking_prop = stocking_diff/Not_stocked
+mean(stocking_prop) #1.65941 or 166% increase
+quantile(stocking_prop, c(0.025, 0.975)) # 1.57540 1.74643 
+```
+
+Basic Summary Info (Table 1)
+```{r}
+final.dat3 <- read_csv("R and stan code/Data/NN_EF_WAE_ZM_Model_MRVrerun.csv")
+
+#surveys done in invaded and uninvaded lakes
+Model_3_Summary <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  mutate(Category = case_when(ZM_LAKE == 0 ~ "Uninvaded",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))%>%
+  group_by(Category)%>%
+  summarise(Total_Surveys = n()) #99 surveys post ZM, 223 surveys pre ZM, 1116 surveys uninvaded
+
+#number of surveys done in each category
+Model_3_Summary2 <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  mutate(Category = case_when(ZM_LAKE == 0 & post == 0 ~ "Uninvaded_PRE",
+                              ZM_LAKE == 0 & post == 1 ~ "Uninvaded_POST",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))%>%
+  group_by(Category)%>%
+  summarise(Total_Surveys = n()) # 99 post ZM, 223 pre zm, 181 uninvaded post, 935 uninvaded pre
+
+
+# values of survey level covariates
+Model_3_Summary_Survey_Level <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  mutate(Category = case_when(ZM_LAKE == 0 & post == 0 ~ "Uninvaded_PRE",
+                              ZM_LAKE == 0 & post == 1 ~ "Uninvaded_POST",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))%>%
+  dplyr::select(SURVEY_YEAR, DD5, SURFACE_TEMP_F, AREA_HECTARES, MAX_DEPTH_M ,MEDIAN_93_19_GDD, TOTAL_CATCH,CPUE, YEAR_INFESTED , Category) %>%
+  group_by(Category)%>%
+  summarise_all(.funs = c(MEAN = mean.default, MAX = max, MIN = min), na.rm = TRUE) # %>%
+  # select("Category", contains("CPUE")) #<- No worky
+  
+
+#write_csv(Model_3_Summary_Survey_Level, "Survey_Level_Summaries.csv")
+# 
+#values of lake level co-variates
+Model_3_Summary_Lake_Level <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  dplyr::select(36,37,38,44, 54,56, 61:63)%>%
+  group_by(ZM_LAKE)%>%
+  summarise_all(.funs = c(MEAN = mean, MAX = max, MIN = min), na.rm = TRUE)
+
+# number of lakes in each category
+Model_3_Summary_Lake <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  mutate(Category = case_when(ZM_LAKE == 0 ~ "Uninvaded",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))%>%
+  group_by(Category, DOW_KITTLE)%>%
+  summarise(Total_Surveys = n())%>%
+  group_by(Category)%>%
+  summarise(Total_Lake_by_cat = n())
+# 282 uninvaded lakes, 33 Pre-ZM, 33 Post-ZM lakes, 348 lakes total
+
+# years surveys were done in each category
+Model_3_Summary_Survey_Year <- final.dat3 %>%
+  mutate(time = ifelse(!is.na(YEAR_INFESTED), YEAR_INFESTED, YEAR_INFESTED.y),
+         post = ifelse(year > time, 1, 0))%>%
+  mutate(Category = case_when(ZM_LAKE == 0 & post == 0 ~ "Uninvaded_PRE",
+                              ZM_LAKE == 0 & post == 1 ~ "Uninvaded_POST",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))%>%
+  dplyr::select(Category, SURVEY_YEAR)%>%
+  group_by(Category)%>%
+  summarise_all(.funs = c(MEAN = mean, MAX = max, MIN = min), na.rm = TRUE)
+```
+
+Posterior probabilities
+```{r}
+#GDD Lake Level average b_gdd
+
+GDD_LL <- posterior_df%>%
+  dplyr::select("b_gdd")%>%
+  filter(b_gdd > 0)
+nrow(GDD_LL)/75000 #0.7629467
+
+#GDD survey Level average b_survey_gdd
+
+GDD_LL <- posterior_df%>%
+  dplyr::select(b_survey_gdd)%>%
+  filter(b_survey_gdd > 0)
+nrow(GDD_LL)/75000 # 0.14944
+
+```
+
+Number of ZM Infested lakes vs number of ZM Infested walleye lakes
+First do with the data to 2019 (used here) 
+THEN compare to the data that is most up to date
+```{r}
+# Read in infested waters list
+  # can be downloaded here: https://www.dnr.state.mn.us/invasives/ais/infested.html
+iw <- read_excel("R and stan code/Data/infested-waters_03_21_2023.xlsx", skip = 1)
+iw <- iw[, -dim(iw)[2]]
+
+# Change column names
+
+colnames(iw) <- c("waterbody_name", "county", "species", "year", "year_conf", "dowlknum")
+
+iw$connected <- factor(ifelse(grepl("connect", iw$year_conf) | grepl("Connect", iw$year_conf) | grepl("conect", iw$year_conf),
+                              "connected", "confirmed"))
+
+
+# Fixing some dowlknum entries
+# CC-LLLL-BB, where C=county, L=lake or parent dow, B=basin, is a nice convention to standardize to
+unique(iw$dowlknum[!grepl("-", iw$dowlknum)])
+
+iw$dowlknum[iw$dowlknum=="NA"] <- NA
+iw$dowlknum[iw$dowlknum=="na"] <- NA
+iw$dowlknum[iw$dowlknum=="none"] <- NA
+iw$dowlknum[iw$dowlknum=="NONE"] <- NA
+
+iw$dowlknum[iw$dowlknum=="none, part of Winnibigoshish"] <- "11-0147"
+
+# There are some dowlknum that use hyphens, but not according to the convention above
+# These all look good: CC-LLLL
+unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==7])
+# None here:
+unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==8])
+# Here's a mistake where there isn't a second hyphen
+unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==9])
+# fix second hyphen
+iw$dowlknum[iw$dowlknum=="18-012601"] <- "18-0126-01"
+# These all look good; CC-LLLL-BB
+unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==10])
+
+iw$parentdow <- substr(iw$dowlknum, 1, 7)
+
+## Walleye lakes----
+### UPDATE FILE PATH WHERE WAE DATA IS STORED ----
+wae_lakes <- read_csv("R and stan code/Data/wae_NR_class.csv")
+
+
+## Getting wae_lakes and iw to work together----
+
+unique(iw$dowlknum)
+unique(iw$parentdow)
+
+# Looks like a mostly clean list of DOWs with the leading zero problem + a couple combined entries
+unique(wae_lakes$DOW)
+wae_lakes$DOW[substr(wae_lakes$DOW, 1, 1)=="0"]
+
+# Breaking down what kinds of entries are in here
+unique(wae_lakes$DOW[nchar(wae_lakes$DOW)<=6])
+unique(wae_lakes$DOW[nchar(wae_lakes$DOW)==7])# these all look like counties 01 - 09 without the leading zero
+print(unique(wae_lakes$DOW[nchar(wae_lakes$DOW)==8]), max=1500)# these look like clean, 8 digit DOWs
+unique(wae_lakes$DOW[nchar(wae_lakes$DOW)>=9])# these should be fairly easy to account for
+
+iw%>%filter(dowlknum%in%"18-0269" & species=="zebra mussel")# infested
+iw%>%filter(dowlknum%in%"18-0268" & species=="zebra mussel")# infested
+iw%>%filter(dowlknum%in%"18-0311" & species=="zebra mussel")# infested
+iw%>%filter(dowlknum%in%"18-0270" & species=="zebra mussel")# not known to be infested
+
+# Pulling hyphens for infested waters, adding "00" for entries with just parent DOWs, 
+# then dropping leading zeros, should do the trick to match "iw" to "wae_lakes"
+iw_wae_fixed <- iw %>%
+  mutate(DOW=str_remove_all(dowlknum, "-")) %>%
+  mutate(DOW=ifelse(nchar(DOW)==6, paste(DOW, "00", sep=""), DOW)) %>%
+  mutate(DOW=ifelse(substr(DOW, 1, 1)=="0", substr(DOW, 2, 8), DOW)) %>%
+  filter(!(is.na(year) | is.na(species) | is.na(dowlknum)))
+
+unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)<=6])
+unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)==7])# these all look like counties 01 - 09 without the leading zero
+unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)==8])# these look like clean, 8 digit DOWs
+unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)>=9])# these should be fairly easy to account for
+
+# Identifying which infested waters lakes have walleye
+iw_wae_fixed$wae <- ifelse(iw_wae_fixed$DOW%in%wae_lakes$DOW, 1, 0)
+
+# The combined dow entries above will have wae=0 here, so need to change that manually
+iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0269"] <- 1
+iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0268"] <- 1
+iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0311"] <- 1
+
+# Filtering down to confirmed zebra mussel infestations, then grouping by parentdow
+# and summarizing to the earliest designation for a parent dow and wae presence
+iw_wae_zm_parentdow <- iw_wae_fixed %>%
+  filter(species=="zebra mussel" & connected=="confirmed") %>%
+  group_by(parentdow) %>%
+  summarize(year=min(year), 
+            wae=max(wae)) %>%
+  ungroup()
+
+# Grouping by year, estimating number of infestations in that year, then 
+# taking the cumulative sum of infestations.
+iw_wae_zm_parentdow_yrsum <- iw_wae_zm_parentdow %>%
+  group_by(year) %>%
+  summarize(n=n()) %>%
+  ungroup() %>%
+  mutate(cumsum_n=cumsum(n))
+
+# Doing the same, but for walleye lakes
+iw_wae_zm_parentdow_yrsum_wae <- iw_wae_zm_parentdow %>%
+  filter(wae==1) %>%
+  group_by(year) %>%
+  summarize(n=n()) %>%
+  ungroup() %>%
+  mutate(cumsum_n=cumsum(n))
+
+# Summaries and data viz ----
+
+# There are 299 lakes (unique 6-digit DOWs) with ZM and
+# 231 of those lakes are walleye lakes.
+iw_wae_zm_parentdow_yrsum %>% filter(year==2022) #299
+iw_wae_zm_parentdow_yrsum_wae %>% filter(year==2022) #231
+
+# That's 77% (77.26) of all ZM lakes
+231/299
+
+# Up until 2019 
+iw_wae_zm_parentdow_yrsum %>% filter(year==2019) #229
+iw_wae_zm_parentdow_yrsum_wae %>% filter(year==2019) #176
+
+#77 (76.86) % of lakes invaded with ZM as of 2019 are walleye lakes
+176/229
+
+# There are 1435 known walleye lakes in the state.
+# There are 11,842 lakes > 10 acres in the state. https://www.dnr.state.mn.us/faq/mnfacts/water.html
+
+# Statewide ZM known infestation rate = 2.5%, 11,842 lakes in MN that are 10+ acres
+299/11842
+
+# ZM known infestation rate in known walleye lakes = 16% 
+231/1435
+
+# ZM known infestation rate in known walleye lakes through 2019 = 12.26%
+176/1435
+
+# ZM known infestation rate in lakes not known to have walleye = 0.7%
+68/10407
+
+# ZM known infestation rate in lakes not known to have walleye = 0.5% through 2019
+(229-176)/(11842-1435)
+
+# ZM are nearly 25 times more likely to be found in lakes known to contain walleye
+(231/1435)/(68/10407)
+
+# ZM are 24 times more likely to be found in lakes known to contain walleye through 2019
+(176/1435)/(53/10407)
+
+# number of ZM invaded lakes through 2019
+ZM_WAE_2019 <- iw_wae_zm_parentdow_yrsum_wae %>%
+  filter()
+```
+
