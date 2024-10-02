@@ -42,7 +42,7 @@ EF_Final <- read_csv("R and stan code/Data/EF_DATA_MRVrerun.csv")
 
 out <- readRDS(file='R and stan code/Data/model_out_zip_MRVrerun.rds')
 
-launch_shinystan(out)
+# launch_shinystan(out)
 
 
 # Convert mcmc draws to matrix
