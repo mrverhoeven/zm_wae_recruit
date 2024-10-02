@@ -5,6 +5,10 @@ date: "1October2024"
 output: html_document
 ---
 
+Think carefully about whether you want to execute this script. It will overwrite same-named data in your project Data folder.
+
+
+
 ```{r}
 library(purrr)
 library("googledrive")
@@ -14,8 +18,8 @@ library(data.table)
 
 # Create data folder on your local machine
 ```{r}
-ifelse(!dir.exists("Data"), 
-       dir.create("Data"), 
+ifelse(!dir.exists("R and stan code/Data"), 
+       dir.create("R and stan code/Data"), 
        "Folder exists already")
 ```
 
