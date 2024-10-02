@@ -31,6 +31,7 @@ library(cowplot)
 # library(ggsn)
 library(grid)
 library(data.table)
+library(shinystan)
 ```
 
 # Data
@@ -39,7 +40,10 @@ library(data.table)
 ```{r, message=FALSE}
 EF_Final <- read_csv("R and stan code/Data/EF_DATA_MRVrerun.csv")
 
-out <- readRDS(file='model_out_zip_MRVrerun.rds')
+out <- readRDS(file='R and stan code/Data/model_out_zip_MRVrerun.rds')
+
+launch_shinystan(out)
+
 
 # Convert mcmc draws to matrix
 posterior <- as.matrix(out)
