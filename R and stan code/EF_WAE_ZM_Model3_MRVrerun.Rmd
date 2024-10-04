@@ -169,7 +169,7 @@ ggplot() + geom_sf(data = us_state_select, color = "gray30", lwd=1, fill="white"
   geom_sf(data = uninvaded.plot,size=0.3, aes(color=as.factor(nn.idx))) +
   geom_sf(data = dat.geo.invaded,size=0.3, color='black') +
   labs(title="", y="Latitude", x="Longitude", color = "Lakes") 
-ggsave("Figs/NN_ZM_map.png", height=5, width=5, units="in")
+# ggsave("Figs/NN_ZM_map.png", height=5, width=5, units="in")
 ```
 
 # Prepare to run model
@@ -240,10 +240,10 @@ nyear <- length(unique(dat$year.id))
 dat <- dat %>% 
   arrange(lake.id)
 
-# Effort offset term (maybe multiply eff_seconds by the number_of_netters?)
+# Effort offset term (maybe multiply eff_seconds by the number_of_netters?) OCt Diagnostics, removed N netters
 dat <- dat %>% 
   mutate(EFF_HRS = EF_SECONDS/3600,
-         offsets = log(EFF_HRS * NUMBER_OF_NETTERS))
+         offsets = log(EFF_HRS))
 ```
 
 Lake-level predictors
@@ -300,13 +300,16 @@ data <- list(y = dat$TOTAL_CATCH, lake = dat$lake.id, N = dim(dat)[1],
 
 
 ```{r}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
 out <- stan(file='R and stan code/pois_model_zip3_MRVrerun.stan', data=data,
-            iter=50000, warmup=25000, chains=3, thin=1, cores=3, refresh = 1)
+            iter=40000, warmup=20000, chains=4, thin=1, refresh = 1)
 print(out)
 
 
 # Save all the stan output
-saveRDS(out, file="model_out_zip_MRVrerun.rds")
+saveRDS(out, file="model_out_zip_MRVrerunNONETTERS.rds")
 out <- readRDS(file='model_out_zipMRVrerun.rds')
 ```
 
