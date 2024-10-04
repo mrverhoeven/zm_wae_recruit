@@ -240,10 +240,10 @@ nyear <- length(unique(dat$year.id))
 dat <- dat %>% 
   arrange(lake.id)
 
-# Effort offset term (maybe multiply eff_seconds by the number_of_netters?) OCt Diagnostics, removed N netters
+# Effort offset term (maybe multiply eff_seconds by the number_of_netters?)
 dat <- dat %>% 
   mutate(EFF_HRS = EF_SECONDS/3600,
-         offsets = log(EFF_HRS))
+         offsets = log(EFF_HRS * NUMBER_OF_NETTERS))
 ```
 
 Lake-level predictors
@@ -309,7 +309,7 @@ print(out)
 
 
 # Save all the stan output
-saveRDS(out, file="model_out_zip_MRVrerunNONETTERS.rds")
+saveRDS(out, file="model_out_zip_MRVrerun.rds")
 out <- readRDS(file='model_out_zipMRVrerun.rds')
 ```
 
